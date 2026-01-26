@@ -166,7 +166,9 @@ class Pipeline:
                                                                                    self.master_config._cache_dir,
                                                                                    self.master_config.embedding_name))
         self._config = self.master_config
-        self._config.active_adapter = 'None'
+        # Track which language's adapter is loaded for each adapter type
+        # This allows caching adapters across inferences for the same language
+        self._config.active_adapters = {'tokenizer': None, 'tagger': None, 'ner': None}
         self._config.max_input_length = tbname2max_input_length.get(lang2treebank[lang],
                                                                     400)  # this is for tokenizer only
 
@@ -190,9 +192,12 @@ class Pipeline:
         else:
             self.auto_mode = False
             lang = self.added_langs[0]
+            old_lang = getattr(self._config, 'active_lang', None)
             self._config.active_lang = lang
             self.active_lang = lang
-            self._config.active_adapter = 'None'
+            # Only reset adapters if language actually changed
+            if old_lang != lang:
+                self._config.active_adapters = {'tokenizer': None, 'tagger': None, 'ner': None}
             self._config.treebank_name = lang2treebank[lang]
             self._config.max_input_length = tbname2max_input_length.get(lang2treebank[lang],
                                                                         400)  # this is for tokenizer only
@@ -207,9 +212,12 @@ class Pipeline:
         assert not self.auto_mode, 'Cannot set a particular language as active in auto mode.\nPlease consider using Trankit in the normal mode to use this function.'
         assert is_string(lang) and lang in self.added_langs, f'Specified language must be added before being activated.\nCurrent added languages: {self.added_langs}'
 
+        old_lang = getattr(self._config, 'active_lang', None)
         self._config.active_lang = lang
         self.active_lang = lang
-        self._config.active_adapter = 'None'
+        # Only reset adapters if language actually changed
+        if old_lang != lang:
+            self._config.active_adapters = {'tokenizer': None, 'tagger': None, 'ner': None}
         self._config.treebank_name = lang2treebank[lang]
         self._config.max_input_length = tbname2max_input_length.get(lang2treebank[lang],
                                                                     400)  # this is for tokenizer only
@@ -297,20 +305,24 @@ class Pipeline:
 
     def _load_adapter_weights(self, model_name):
         assert model_name in ['tokenizer', 'tagger', 'ner']
-        if model_name != self._config.active_adapter: # only load adapter weights when we need to perform a new task
+        current_lang = self._config.active_lang
+        cached_lang = self._config.active_adapters.get(model_name)
+
+        # Only load adapter weights when language changed for this adapter type
+        if cached_lang != current_lang:
             if model_name == 'tokenizer':
-                pretrained_weights = self._tokenizer[self._config.active_lang].pretrained_tokenizer_weights
+                pretrained_weights = self._tokenizer[current_lang].pretrained_tokenizer_weights
             elif model_name == 'tagger':
-                pretrained_weights = self._tagger[self._config.active_lang].pretrained_tagger_weights
+                pretrained_weights = self._tagger[current_lang].pretrained_tagger_weights
             else:
                 assert model_name == 'ner'
-                pretrained_weights = self._ner_model[self._config.active_lang].pretrained_ner_weights
+                pretrained_weights = self._ner_model[current_lang].pretrained_ner_weights
 
             self._adapter_loader.load_from_state_dict(
                 pretrained_weights, model_name, load_as="embedding", start_prefix="xlmr."
             )
-            # save information of active adapter
-            self._config.active_adapter = model_name
+            # Cache which language's adapter is now loaded for this type
+            self._config.active_adapters[model_name] = current_lang
 
     def _detect_lang_and_switch(self, text):
         detected_code = langid.classify(text)[0]
@@ -320,9 +332,12 @@ class Pipeline:
 
         assert is_string(lang) and lang in self.added_langs, f'Specified language must be added before being activated.\nCurrent added languages: {self.added_langs}'
 
+        old_lang = getattr(self._config, 'active_lang', None)
         self._config.active_lang = lang
         self.active_lang = lang
-        self._config.active_adapter = 'None'
+        # Only reset adapters if language actually changed
+        if old_lang != lang:
+            self._config.active_adapters = {'tokenizer': None, 'tagger': None, 'ner': None}
         self._config.treebank_name = lang2treebank[lang]
         self._config.max_input_length = tbname2max_input_length.get(lang2treebank[lang],
                                                                     400)  # this is for tokenizer only
