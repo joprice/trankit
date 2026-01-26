@@ -267,6 +267,7 @@ def get_args():
         'lang': '',
         'ensemble_dict': True,
         'dict_only': False,
+        'skip_dict_seq2seq': True,  # Skip seq2seq for words found in dictionary
         'hidden_dim': 200,
         'emb_dim': 50,
         'num_layers': 1,
@@ -467,19 +468,13 @@ class LemmaWrapper:
             print('This language does not require lemmatization.')
             self.config.logger.info('This language does not require lemmatization.')
 
-    def predict(self, tagged_doc, obmit_tag):
+    def predict(self, tagged_doc, obmit_tag, skip_dict_seq2seq=None):
         if self.treebank_name not in ['UD_Old_French-SRCMF', 'UD_Vietnamese-VTB', 'UD_Vietnamese-VLSP']:
             vocab = self.vocab
-            # load data
-            batch = LemmaDataLoader(tagged_doc, self.args['batch_size'], self.loaded_args, vocab=vocab,
-                                    evaluation=True)
 
-            # skip eval if dev data does not exist
-            if len(batch) == 0:
-                print("No dev data available...")
-                sys.exit(0)
+            # Build predict_dict_input first to check dictionary coverage
             predict_dict_input = []
-            for sentence in batch.doc:
+            for sentence in tagged_doc:
                 for t in sentence[TOKENS]:
                     if type(t[ID]) == int or len(t[ID]) == 1:
                         predict_dict_input.append([t[TEXT], t[UPOS] if UPOS in t else None])
@@ -487,25 +482,105 @@ class LemmaWrapper:
                         for w in t[EXPANDED]:
                             predict_dict_input.append([w[TEXT], w[UPOS] if UPOS in w else None])
 
-            preds = []
-            edits = []
-            for i, b in enumerate(batch):
-                ps, es = self.model.predict(b, self.args['beam_size'])
-                preds += ps
-                if es is not None:
-                    edits += es
+            # Determine if we should use the skip optimization
+            use_skip = skip_dict_seq2seq if skip_dict_seq2seq is not None else self.loaded_args.get('skip_dict_seq2seq', True)
 
-            postprocess_input = [w[0] for w in predict_dict_input]
-            preds = self.model.postprocess(
-                postprocess_input,
-                preds,
-                edits=edits)
+            if use_skip and len(predict_dict_input) > 0:
+                # Check which words are in dictionary
+                skip_mask = self.model.skip_seq2seq(predict_dict_input)
+                dict_preds = self.model.predict_dict(predict_dict_input)
 
-            preds = self.model.ensemble(
-                predict_dict_input, preds)
+                # Find indices that need seq2seq
+                seq2seq_indices = [i for i, skip in enumerate(skip_mask) if not skip]
+
+                if len(seq2seq_indices) == 0:
+                    # All words in dictionary - skip seq2seq entirely
+                    preds = dict_preds
+                else:
+                    # Some words need seq2seq - run only on those
+                    # Build filtered document with only non-dict words
+                    seq2seq_set = set(seq2seq_indices)
+                    word_idx = 0
+                    filtered_doc = []
+                    idx_mapping = {}  # maps filtered index -> original index
+                    filtered_idx = 0
+
+                    for sentence in tagged_doc:
+                        filtered_sentence = {TOKENS: []}
+                        for t in sentence[TOKENS]:
+                            if type(t[ID]) == int or len(t[ID]) == 1:
+                                if word_idx in seq2seq_set:
+                                    filtered_sentence[TOKENS].append(t)
+                                    idx_mapping[filtered_idx] = word_idx
+                                    filtered_idx += 1
+                                word_idx += 1
+                            else:
+                                # Handle expanded tokens
+                                expanded_needed = []
+                                for w in t[EXPANDED]:
+                                    if word_idx in seq2seq_set:
+                                        expanded_needed.append(w)
+                                        idx_mapping[filtered_idx] = word_idx
+                                        filtered_idx += 1
+                                    word_idx += 1
+                                if expanded_needed:
+                                    new_token = dict(t)
+                                    new_token[EXPANDED] = expanded_needed
+                                    filtered_sentence[TOKENS].append(new_token)
+                        if filtered_sentence[TOKENS]:
+                            filtered_doc.append(filtered_sentence)
+
+                    if filtered_doc:
+                        # Run seq2seq only on filtered words
+                        batch = LemmaDataLoader(filtered_doc, self.args['batch_size'], self.loaded_args,
+                                              vocab=vocab, evaluation=True)
+
+                        seq2seq_preds = []
+                        edits = []
+                        for i, b in enumerate(batch):
+                            ps, es = self.model.predict(b, self.args['beam_size'])
+                            seq2seq_preds += ps
+                            if es is not None:
+                                edits += es
+
+                        # Postprocess seq2seq predictions
+                        filtered_words = [predict_dict_input[idx_mapping[i]][0] for i in range(len(seq2seq_preds))]
+                        seq2seq_preds = self.model.postprocess(filtered_words, seq2seq_preds, edits=edits)
+
+                        # Merge: start with dict predictions, overlay seq2seq where needed
+                        preds = list(dict_preds)
+                        for filtered_i, orig_i in idx_mapping.items():
+                            preds[orig_i] = seq2seq_preds[filtered_i]
+                    else:
+                        preds = dict_preds
+            else:
+                # Original behavior without optimization
+                batch = LemmaDataLoader(tagged_doc, self.args['batch_size'], self.loaded_args, vocab=vocab,
+                                        evaluation=True)
+
+                if len(batch) == 0:
+                    print("No dev data available...")
+                    sys.exit(0)
+
+                preds = []
+                edits = []
+                for i, b in enumerate(batch):
+                    ps, es = self.model.predict(b, self.args['beam_size'])
+                    preds += ps
+                    if es is not None:
+                        edits += es
+
+                postprocess_input = [w[0] for w in predict_dict_input]
+                preds = self.model.postprocess(
+                    postprocess_input,
+                    preds,
+                    edits=edits)
+
+                preds = self.model.ensemble(
+                    predict_dict_input, preds)
 
             # write to file and score
-            lemmatized_doc = set_lemma(batch.doc, preds, obmit_tag)
+            lemmatized_doc = set_lemma(tagged_doc, preds, obmit_tag)
         else:
             # use identity mapping for prediction
             preds = [t[TEXT] for sentence in tagged_doc for t in sentence[TOKENS] if

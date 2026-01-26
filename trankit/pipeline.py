@@ -965,24 +965,24 @@ class Pipeline:
                 ori_text = deepcopy(input)
                 return {TEXT: ori_text, SENTENCES: self._lemmatize_doc(in_doc=input, obmit_tag=True), LANG: self.active_lang}
 
-    def _lemmatize_sent(self, in_sent, obmit_tag=False):
+    def _lemmatize_sent(self, in_sent, obmit_tag=False, skip_dict_seq2seq=None):
         if type(in_sent) == str:
             in_sent = self._tokenize_sent(in_sent)
             in_sent = self._posdep_sent(in_sent)
 
         lemmatized_sent = \
-            self._lemma_model[self._config.active_lang].predict([{ID: 1, TOKENS: in_sent}], obmit_tag)[0][
+            self._lemma_model[self._config.active_lang].predict([{ID: 1, TOKENS: in_sent}], obmit_tag, skip_dict_seq2seq=skip_dict_seq2seq)[0][
                 TOKENS]
 
         gc.collect()
         return lemmatized_sent
 
-    def _lemmatize_doc(self, in_doc, obmit_tag=False):  # assuming input is a document
+    def _lemmatize_doc(self, in_doc, obmit_tag=False, skip_dict_seq2seq=None):  # assuming input is a document
         if type(in_doc) == str:  # in_doc is a raw string in this case
             in_doc = self._tokenize_doc(in_doc)
             in_doc = self._posdep_doc(in_doc)
 
-        lemmatized_doc = self._lemma_model[self._config.active_lang].predict(in_doc, obmit_tag)
+        lemmatized_doc = self._lemma_model[self._config.active_lang].predict(in_doc, obmit_tag, skip_dict_seq2seq=skip_dict_seq2seq)
 
         gc.collect()
         return lemmatized_doc
@@ -1117,7 +1117,7 @@ class Pipeline:
         gc.collect()
         return dner_doc
 
-    def __call__(self, input, is_sent=False):
+    def __call__(self, input, is_sent=False, skip_dict_seq2seq=None):
         if is_sent:
             assert is_string(input) or is_list_strings(
                 input), 'Input must be one of the following:\n(i) A non-empty string.\n(ii) A list of non-empty strings.'
@@ -1129,7 +1129,7 @@ class Pipeline:
 
                 tokenized_sent = [{ID: k + 1, TEXT: w} for k, w in enumerate(input)]
                 tagged_sent = self._posdep_sent(tokenized_sent)
-                out = self._lemmatize_sent(tagged_sent)
+                out = self._lemmatize_sent(tagged_sent, skip_dict_seq2seq=skip_dict_seq2seq)
                 if self._config.active_lang in langwithner:  # ner if possible
                     out = self._ner_sent(out)
                 final = {TOKENS: out, LANG: self.active_lang}
@@ -1140,7 +1140,7 @@ class Pipeline:
 
                 ori_text = deepcopy(input)
                 tagged_sent = self._posdep_sent(input)
-                out = self._lemmatize_sent(tagged_sent)
+                out = self._lemmatize_sent(tagged_sent, skip_dict_seq2seq=skip_dict_seq2seq)
                 if self._config.active_lang in langwithner:  # ner if possible
                     out = self._ner_sent(out)
                 final = {TEXT: ori_text, TOKENS: out, LANG: self.active_lang}
@@ -1156,7 +1156,7 @@ class Pipeline:
                 input = [{ID: sid + 1, TOKENS: [{ID: tid + 1, TEXT: w} for tid, w in enumerate(sent)]} for sid, sent in
                          enumerate(input)]
                 tagged_doc = self._posdep_doc(input)
-                out = self._lemmatize_doc(tagged_doc)
+                out = self._lemmatize_doc(tagged_doc, skip_dict_seq2seq=skip_dict_seq2seq)
                 if self._config.active_lang in langwithner:  # ner if possible
                     out = self._ner_doc(out)
                 final = {SENTENCES: out, LANG: self.active_lang}
@@ -1167,7 +1167,7 @@ class Pipeline:
 
                 ori_text = deepcopy(input)
                 tagged_doc = self._posdep_doc(in_doc=input)
-                out = self._lemmatize_doc(tagged_doc)
+                out = self._lemmatize_doc(tagged_doc, skip_dict_seq2seq=skip_dict_seq2seq)
                 if self._config.active_lang in langwithner:  # ner if possible
                     out = self._ner_doc(out)
                 final = {TEXT: ori_text, SENTENCES: out, LANG: self.active_lang}
