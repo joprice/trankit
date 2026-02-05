@@ -99,13 +99,28 @@ def download(cache_dir, language, saved_model_version, embedding_name):  # put a
         url = "https://huggingface.co/uonlp/trankit/resolve/main/models/{}/{}/{}.zip".format(saved_model_version, embedding_name,
                                                                             language)
         print(url)
+        ensure_dir(lang_dir)
+
+        use_hf_hub = os.environ.get("TRANKIT_USE_HF_HUB", "").lower() in ("1", "true", "yes")
+        if use_hf_hub:
+            try:
+                from huggingface_hub import hf_hub_download
+                repo_id = "uonlp/trankit"
+                filename = "models/{}/{}/{}.zip".format(saved_model_version, embedding_name, language)
+                cache_fpath = hf_hub_download(repo_id=repo_id, filename=filename)
+                shutil.copyfile(cache_fpath, save_fpath)
+                unzip(lang_dir, '{}.zip'.format(language))
+                with open(os.path.join(lang_dir, '{}.downloaded'.format(language)), 'w') as f:
+                    f.write('')
+                return
+            except Exception as e:
+                print("HF Hub download failed, falling back to direct download: {}".format(e))
 
         response = requests.get(url, stream=True)
         total_size_in_bytes = int(response.headers.get('content-length', 0))
         block_size = 1024
         progress_bar = tqdm(total=total_size_in_bytes, unit='iB', unit_scale=True, desc='Downloading: ')
 
-        ensure_dir(lang_dir)
         with open(save_fpath, 'wb') as file:
             for data in response.iter_content(block_size):
                 progress_bar.update(len(data))

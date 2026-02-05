@@ -59,7 +59,7 @@ setup(
     ],
     packages=find_packages(),
     include_package_data=True,
-    install_requires=['adapters>=1.0.0', 'transformers>=4.20.0', 'numpy', 'protobuf', 'requests', 'torch>=1.6.0', 'tqdm>=4.27', 'langid==1.1.6', 'filelock', 'tokenizers>=0.7.0', 'regex != 2019.12.17', 'packaging', 'sentencepiece', 'sacremoses', 'six'],
+    install_requires=['adapters>=1.0.0', 'transformers>=4.20.0', 'numpy', 'protobuf', 'requests', 'torch>=1.6.0', 'tqdm>=4.27', 'langid==1.1.6', 'filelock', 'tokenizers>=0.7.0', 'regex != 2019.12.17', 'packaging', 'sentencepiece', 'sacremoses', 'six', 'huggingface_hub>=0.20.0'],
     entry_points={
     },
 )
