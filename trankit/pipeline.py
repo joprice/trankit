@@ -168,10 +168,22 @@ class Pipeline:
         else:
             cache_dir = os.path.join(self.master_config._cache_dir, self.master_config.embedding_name)
 
-        self.master_config.wordpiece_splitter = XLMRobertaTokenizer.from_pretrained(
-            self.master_config.embedding_name,
-            cache_dir=cache_dir,
-        )
+        disable_hf_transfer = os.environ.get("TRANKIT_DISABLE_HF_TRANSFER_TOKENIZER", "").lower() in ("1", "true", "yes")
+        if disable_hf_transfer:
+            previous_hf_transfer = os.environ.get("HF_HUB_ENABLE_HF_TRANSFER")
+            os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+
+        try:
+            self.master_config.wordpiece_splitter = XLMRobertaTokenizer.from_pretrained(
+                self.master_config.embedding_name,
+                cache_dir=cache_dir,
+            )
+        finally:
+            if disable_hf_transfer:
+                if previous_hf_transfer is None:
+                    os.environ.pop("HF_HUB_ENABLE_HF_TRANSFER", None)
+                else:
+                    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = previous_hf_transfer
         self._config = self.master_config
         # Track which language's adapter is loaded for each adapter type
         # This allows caching adapters across inferences for the same language
