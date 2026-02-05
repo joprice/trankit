@@ -18,6 +18,8 @@ import gc
 import os
 from transformers import XLMRobertaTokenizer
 
+TRANKIT_QUIET = os.environ.get("TRANKIT_QUIET", "").lower() in ("1", "true", "yes")
+
 
 def is_string(input):
     if type(input) == str and len(input.strip()) > 0:
@@ -134,9 +136,10 @@ class Pipeline:
             # constrain the language set for auto mode
             langid.set_languages([lang2code[l] for l in self.added_langs])
             self.code2lang = code2lang
-            print('=' * 50)
-            print(f'Trankit is in auto mode!\nAvailable languages: {self.added_langs}')
-            print('=' * 50)
+            if not TRANKIT_QUIET:
+                print('=' * 50)
+                print(f'Trankit is in auto mode!\nAvailable languages: {self.added_langs}')
+                print('=' * 50)
         else:
             self.set_active(lang)
 
@@ -205,9 +208,10 @@ class Pipeline:
                     self.code2lang[extra_lang2code[l]] = l
 
             langid.set_languages(cls_codes)
-            print('=' * 50)
-            print('Trankit is in auto mode!')
-            print('=' * 50)
+            if not TRANKIT_QUIET:
+                print('=' * 50)
+                print('Trankit is in auto mode!')
+                print('=' * 50)
         else:
             self.auto_mode = False
             lang = self.added_langs[0]
@@ -220,12 +224,13 @@ class Pipeline:
             self._config.treebank_name = lang2treebank[lang]
             self._config.max_input_length = tbname2max_input_length.get(lang2treebank[lang],
                                                                         400)  # this is for tokenizer only
-            print('=' * 50)
-            print('Trankit is in normal mode!')
-            print('=' * 50)
-            print(f'Active language: {self._config.active_lang}')
-            print(f'Available languages: {self.added_langs}')
-            print('=' * 50)
+            if not TRANKIT_QUIET:
+                print('=' * 50)
+                print('Trankit is in normal mode!')
+                print('=' * 50)
+                print(f'Active language: {self._config.active_lang}')
+                print(f'Available languages: {self.added_langs}')
+                print('=' * 50)
 
     def set_active(self, lang):
         assert not self.auto_mode, 'Cannot set a particular language as active in auto mode.\nPlease consider using Trankit in the normal mode to use this function.'
@@ -240,9 +245,10 @@ class Pipeline:
         self._config.treebank_name = lang2treebank[lang]
         self._config.max_input_length = tbname2max_input_length.get(lang2treebank[lang],
                                                                     400)  # this is for tokenizer only
-        print('=' * 50)
-        print(f'Active language: {self._config.active_lang}')
-        print('=' * 50)
+        if not TRANKIT_QUIET:
+            print('=' * 50)
+            print(f'Active language: {self._config.active_lang}')
+            print('=' * 50)
 
     def add(self, lang):
         assert is_string(lang) and lang in supported_langs, f'Specified language must be one of the supported languages: {supported_langs}'
