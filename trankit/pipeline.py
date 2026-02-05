@@ -15,6 +15,7 @@ from adapters.loading import AdapterLoader
 from datetime import datetime
 import langid
 import gc
+import os
 from transformers import XLMRobertaTokenizer
 
 
@@ -161,10 +162,16 @@ class Pipeline:
         if not os.path.exists(self.master_config._cache_dir):
             os.makedirs(self.master_config._cache_dir, exist_ok=True)
 
-        self.master_config.wordpiece_splitter = XLMRobertaTokenizer.from_pretrained(self.master_config.embedding_name,
-                                                                               cache_dir=os.path.join(
-                                                                                   self.master_config._cache_dir,
-                                                                                   self.master_config.embedding_name))
+        tokenizer_cache_dir = os.environ.get("TRANKIT_TOKENIZER_CACHE_DIR") or os.environ.get("TRANSFORMERS_CACHE")
+        if tokenizer_cache_dir:
+            cache_dir = tokenizer_cache_dir
+        else:
+            cache_dir = os.path.join(self.master_config._cache_dir, self.master_config.embedding_name)
+
+        self.master_config.wordpiece_splitter = XLMRobertaTokenizer.from_pretrained(
+            self.master_config.embedding_name,
+            cache_dir=cache_dir,
+        )
         self._config = self.master_config
         # Track which language's adapter is loaded for each adapter type
         # This allows caching adapters across inferences for the same language
