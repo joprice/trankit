@@ -32,6 +32,10 @@ bench-gpu:
     just bench xlm-roberta-base
     just bench xlm-roberta-large
 
+# simulate server throughput: N docs of ~W words through the full pipeline
+bench-throughput model="xlm-roberta-base" *args="":
+    {{python}} trankit/tests/test_benchmark.py {{model}} --throughput {{args}}
+
 # run benchmark under cProfile (only timed runs, excludes warmup/init)
 # device: "gpu" (mps/cuda) or "cpu"
 # pass out=<path> to override output path

@@ -13,7 +13,7 @@ from .utils.conll import *
 from .utils.tbinfo import tbname2training_id, lang2treebank
 from .utils.chuliu_edmonds import *
 from adapters.loading import AdapterLoader
-from adapters import AdapterConfig
+from adapters import AdapterConfig, Stack
 from datetime import datetime
 import langid
 import re
@@ -428,7 +428,7 @@ class Pipeline:
                     self._resident_adapters.add(slot_name)
 
             # Warm path: pointer swap only (~0.5ms)
-            self._embedding_layers.xlmr.set_active_adapters([slot_name])
+            self._embedding_layers.xlmr.set_active_adapters(Stack(slot_name))
         else:
             # Original behavior: copy weights into fixed slot on language change
             cached_lang = self._config.active_adapters.get(model_name)
@@ -446,7 +446,7 @@ class Pipeline:
                 )
                 self._config.active_adapters[model_name] = current_lang
 
-            self._embedding_layers.xlmr.set_active_adapters([model_name])
+            self._embedding_layers.xlmr.set_active_adapters(Stack(model_name))
 
     def evict_language_adapters(self, lang):
         """Remove per-language adapter slots from XLM-R, freeing device memory.
@@ -461,7 +461,7 @@ class Pipeline:
             slot_name = _adapter_slot_name(task, lang)
             if slot_name in self._resident_adapters:
                 if slot_name in _active_adapter_names(xlmr):
-                    xlmr.set_active_adapters(['tokenizer'])
+                    xlmr.set_active_adapters(Stack('tokenizer'))
                 xlmr.delete_adapter(slot_name)
                 self._resident_adapters.discard(slot_name)
 

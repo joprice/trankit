@@ -1,6 +1,6 @@
 import adapters
 from transformers import XLMRobertaModel
-from adapters import AdapterConfig
+from adapters import AdapterConfig, Stack
 from ..utils.base_utils import *
 
 
@@ -20,8 +20,8 @@ class Base_Model(nn.Module):  # currently assuming the pretrained transformer is
         task_config = AdapterConfig.load("pfeiffer",
                                          reduction_factor=6 if config.embedding_name == 'xlm-roberta-base' else 4)
         self.xlmr.add_adapter(task_name, config=task_config)
-        self.xlmr.train_adapter([task_name])
-        self.xlmr.set_active_adapters([task_name])
+        self.xlmr.train_adapter(Stack(task_name))
+        self.xlmr.set_active_adapters(Stack(task_name))
 
     def encode(self, piece_idxs, attention_masks):
         batch_size, _ = piece_idxs.size()
