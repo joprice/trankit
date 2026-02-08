@@ -171,7 +171,7 @@ def wordpiece_tokenize_from_raw_text(wordpiece_splitter, sent_text, sent_labels,
     character_locations = get_character_locations(original_characters, sent_text)
 
     fast_result = None
-    if fast_path:
+    if fast_path and os.environ.get('TRANKIT_TOKENIZER_FASTPATH') != '0':
         fast_result = _compute_wordpiece_mapping_fast(
             pseudo_tokens, group_pieces, sent_labels, character_locations, sent_position_in_paragraph
         )
