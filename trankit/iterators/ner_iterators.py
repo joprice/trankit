@@ -57,18 +57,19 @@ class NERDatasetLive(Dataset):
             if len(flat_pieces) > self.max_input_length - 2:
                 sub_insts = []
                 cur_inst = deepcopy(inst)
-                for key in ['words', 'word_ids', 'flat_pieces']:
+                for key in ['words', 'word_ids', 'flat_pieces', 'pieces']:
                     cur_inst[key] = []
 
                 for i in range(len(inst['words'])):
                     for key in ['words', 'word_ids']:
                         cur_inst[key].append(inst[key][i])
+                    cur_inst['pieces'].append(pieces[i])
                     cur_inst['flat_pieces'].extend(pieces[i])
                     if len(cur_inst['flat_pieces']) >= self.max_input_length - 10:
                         sub_insts.append(cur_inst)
 
                         cur_inst = deepcopy(inst)
-                        for key in ['words', 'word_ids', 'flat_pieces']:
+                        for key in ['words', 'word_ids', 'flat_pieces', 'pieces']:
                             cur_inst[key] = []
 
                 if len(cur_inst['flat_pieces']) > 0:
@@ -78,6 +79,7 @@ class NERDatasetLive(Dataset):
                 # 'word_ids' is used for later filling predictions into the right place
                 new_data.extend(sub_insts)
             else:
+                inst['pieces'] = pieces
                 new_data.append(inst)
         self.data = new_data
 
@@ -124,15 +126,7 @@ class NERDatasetLive(Dataset):
     def numberize(self):
         data = []
         for inst in self.data:
-            words = inst['words']
-            # lowercase
-            if self.config.lowercase:
-                words = [w.lower() for w in words]
-            # ---------------------
-            pieces = [[p for p in self.wordpiece_splitter.tokenize(w) if p != '▁'] for w in words]
-            for ps in pieces:
-                if len(ps) == 0:
-                    ps += ['-']
+            pieces = inst['pieces']
             word_lens = [len(x) for x in pieces]
             flat_pieces = [p for ps in pieces for p in ps]
             # Pad word pieces with special tokens
