@@ -105,10 +105,10 @@ class TokenizeDatasetLive(Dataset):
 
             batch_wordpiece_num.append(inst.wordpiece_num)
 
-        batch_piece_idxs = torch.tensor(batch_piece_idxs, dtype=torch.long, device=self.config.device)
-        batch_attention_masks = torch.tensor(batch_attention_masks, dtype=torch.long, device=self.config.device)
-        batch_token_type_idxs = torch.tensor(batch_token_type_idxs, dtype=torch.long, device=self.config.device)
-        batch_wordpiece_num = torch.tensor(batch_wordpiece_num, dtype=torch.long, device=self.config.device)
+        batch_piece_idxs = torch.tensor(batch_piece_idxs, dtype=torch.long)
+        batch_attention_masks = torch.tensor(batch_attention_masks, dtype=torch.long)
+        batch_token_type_idxs = torch.tensor(batch_token_type_idxs, dtype=torch.long)
+        batch_wordpiece_num = torch.tensor(batch_wordpiece_num, dtype=torch.long)
 
         return Batch(
             paragraph_index=batch_paragraph_index,

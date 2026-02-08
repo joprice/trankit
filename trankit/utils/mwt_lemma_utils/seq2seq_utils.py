@@ -92,14 +92,14 @@ def edit_word(word, pred, edit_id):
 
 def unpack_mwt_batch(batch, device):
     """ Unpack a batch from the data loader. """
-    inputs = [b.to(device) if b is not None else None for b in batch[:4]]
+    inputs = [b.to(device, non_blocking=True) if b is not None else None for b in batch[:4]]
     orig_idx = batch[4]
     return inputs, orig_idx
 
 
 def unpack_lemma_batch(batch, device):
     """ Unpack a batch from the data loader. """
-    inputs = [b.to(device) if b is not None else None for b in batch[:6]]
+    inputs = [b.to(device, non_blocking=True) if b is not None else None for b in batch[:6]]
     orig_idx = batch[6]
     return inputs, orig_idx
 

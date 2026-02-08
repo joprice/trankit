@@ -6,6 +6,7 @@ from .models.lemma_model import LemmaWrapper
 from .iterators.tokenizer_iterators import TokenizeDatasetLive
 from .iterators.tagger_iterators import TaggerDatasetLive
 from .iterators.ner_iterators import NERDatasetLive
+from .iterators import batch_to_device
 from .utils.tokenizer_utils import *
 from collections import defaultdict
 from .utils.conll import *
@@ -149,18 +150,24 @@ class Pipeline:
         if self._gpu and torch.cuda.is_available():
             self._use_gpu = True
             self._use_half = True
+            self._pin_memory = True
+            self._non_blocking = True
             self.master_config.device = torch.device('cuda')
             self._tokbatchsize = 6
             self._tagbatchsize = 24
         elif self._gpu and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
             self._use_gpu = True
             self._use_half = False
+            self._pin_memory = False
+            self._non_blocking = False
             self.master_config.device = torch.device('mps')
             self._tokbatchsize = 6
             self._tagbatchsize = 24
         else:
             self._use_gpu = False
             self._use_half = False
+            self._pin_memory = False
+            self._non_blocking = False
             self.master_config.device = torch.device('cpu')
             self._tokbatchsize = 2
             self._tagbatchsize = 12
@@ -401,7 +408,9 @@ class Pipeline:
         # make predictions
         wordpiece_pred_labels, wordpiece_ends, paragraph_indexes = [], [], []
         for batch in DataLoader(test_set, batch_size=eval_batch_size,
-                                shuffle=False, collate_fn=test_set.collate_fn):
+                                shuffle=False, collate_fn=test_set.collate_fn,
+                                pin_memory=self._pin_memory):
+            batch = batch_to_device(batch, self._config.device, non_blocking=self._non_blocking)
             wordpiece_reprs = self._embedding_layers.get_tokenizer_inputs(batch)
             predictions = self._tokenizer[self._config.active_lang].predict(batch, wordpiece_reprs)
             wp_pred_labels, wp_ends, para_ids = predictions[0], predictions[1], predictions[2]
@@ -537,7 +546,9 @@ class Pipeline:
         # make predictions
         wordpiece_pred_labels, wordpiece_ends, paragraph_indexes = [], [], []
         for batch in DataLoader(test_set, batch_size=eval_batch_size,
-                                shuffle=False, collate_fn=test_set.collate_fn):
+                                shuffle=False, collate_fn=test_set.collate_fn,
+                                pin_memory=self._pin_memory):
+            batch = batch_to_device(batch, self._config.device, non_blocking=self._non_blocking)
             wordpiece_reprs = self._embedding_layers.get_tokenizer_inputs(batch)
             predictions = self._tokenizer[self._config.active_lang].predict(batch, wordpiece_reprs)
             wp_pred_labels, wp_ends, para_ids = predictions[0], predictions[1], predictions[2]
@@ -656,7 +667,9 @@ class Pipeline:
         # make predictions
         wordpiece_pred_labels, wordpiece_ends, paragraph_indexes = [], [], []
         for batch in DataLoader(test_set, batch_size=eval_batch_size,
-                                shuffle=False, collate_fn=test_set.collate_fn):
+                                shuffle=False, collate_fn=test_set.collate_fn,
+                                pin_memory=self._pin_memory):
+            batch = batch_to_device(batch, self._config.device, non_blocking=self._non_blocking)
             wordpiece_reprs = self._embedding_layers.get_tokenizer_inputs(batch)
             predictions = self._tokenizer[self._config.active_lang].predict(batch, wordpiece_reprs)
             wp_pred_labels, wp_ends, para_ids = predictions[0], predictions[1], predictions[2]
@@ -833,7 +846,9 @@ class Pipeline:
         itos = self._config.itos[self._config.active_lang]
         for batch in DataLoader(test_set,
                                 batch_size=eval_batch_size,
-                                shuffle=False, collate_fn=test_set.collate_fn):
+                                shuffle=False, collate_fn=test_set.collate_fn,
+                                pin_memory=self._pin_memory):
+            batch = batch_to_device(batch, self._config.device, non_blocking=self._non_blocking)
             batch_size = len(batch.word_num)
 
             word_reprs, cls_reprs = self._embedding_layers.get_tagger_inputs(batch)
@@ -913,7 +928,9 @@ class Pipeline:
         itos = self._config.itos[self._config.active_lang]
         for batch in DataLoader(test_set,
                                 batch_size=eval_batch_size,
-                                shuffle=False, collate_fn=test_set.collate_fn):
+                                shuffle=False, collate_fn=test_set.collate_fn,
+                                pin_memory=self._pin_memory):
+            batch = batch_to_device(batch, self._config.device, non_blocking=self._non_blocking)
             batch_size = len(batch.word_num)
 
             word_reprs, cls_reprs = self._embedding_layers.get_tagger_inputs(batch)
@@ -1102,7 +1119,9 @@ class Pipeline:
 
         for batch in DataLoader(test_set,
                                 batch_size=eval_batch_size,
-                                shuffle=False, collate_fn=test_set.collate_fn):
+                                shuffle=False, collate_fn=test_set.collate_fn,
+                                pin_memory=self._pin_memory):
+            batch = batch_to_device(batch, self._config.device, non_blocking=self._non_blocking)
             word_reprs, cls_reprs = self._embedding_layers.get_tagger_inputs(batch)
             pred_entity_labels = self._ner_model[self._config.active_lang].predict(batch, word_reprs)
 
@@ -1140,7 +1159,9 @@ class Pipeline:
 
         for batch in DataLoader(test_set,
                                 batch_size=eval_batch_size,
-                                shuffle=False, collate_fn=test_set.collate_fn):
+                                shuffle=False, collate_fn=test_set.collate_fn,
+                                pin_memory=self._pin_memory):
+            batch = batch_to_device(batch, self._config.device, non_blocking=self._non_blocking)
             word_reprs, cls_reprs = self._embedding_layers.get_tagger_inputs(batch)
             pred_entity_labels = self._ner_model[self._config.active_lang].predict(batch, word_reprs)
 
@@ -1203,7 +1224,9 @@ class Pipeline:
                 itos = self._config.itos[self._config.active_lang]
                 for batch in DataLoader(tagger_test_set,
                                         batch_size=eval_batch_size,
-                                        shuffle=False, collate_fn=tagger_test_set.collate_fn):
+                                        shuffle=False, collate_fn=tagger_test_set.collate_fn,
+                                        pin_memory=self._pin_memory):
+                    batch = batch_to_device(batch, self._config.device, non_blocking=self._non_blocking)
                     batch_size = len(batch.word_num)
 
                     word_reprs, cls_reprs = self._embedding_layers.get_tagger_inputs(batch)
@@ -1257,7 +1280,9 @@ class Pipeline:
 
                         for batch in DataLoader(ner_test_set,
                                                 batch_size=eval_batch_size,
-                                                shuffle=False, collate_fn=ner_test_set.collate_fn):
+                                                shuffle=False, collate_fn=ner_test_set.collate_fn,
+                                                pin_memory=self._pin_memory):
+                            batch = batch_to_device(batch, self._config.device, non_blocking=self._non_blocking)
                             word_reprs, cls_reprs = self._embedding_layers.get_tagger_inputs(batch)
                             pred_entity_labels = self._ner_model[self._config.active_lang].predict(batch, word_reprs)
 
@@ -1314,7 +1339,9 @@ class Pipeline:
                 itos = self._config.itos[self._config.active_lang]
                 for batch in DataLoader(tagger_test_set,
                                         batch_size=eval_batch_size,
-                                        shuffle=False, collate_fn=tagger_test_set.collate_fn):
+                                        shuffle=False, collate_fn=tagger_test_set.collate_fn,
+                                        pin_memory=self._pin_memory):
+                    batch = batch_to_device(batch, self._config.device, non_blocking=self._non_blocking)
                     batch_size = len(batch.word_num)
 
                     word_reprs, cls_reprs = self._embedding_layers.get_tagger_inputs(batch)
@@ -1367,7 +1394,9 @@ class Pipeline:
 
                         for batch in DataLoader(ner_test_set,
                                                 batch_size=eval_batch_size,
-                                                shuffle=False, collate_fn=ner_test_set.collate_fn):
+                                                shuffle=False, collate_fn=ner_test_set.collate_fn,
+                                                pin_memory=self._pin_memory):
+                            batch = batch_to_device(batch, self._config.device, non_blocking=self._non_blocking)
                             word_reprs, cls_reprs = self._embedding_layers.get_tagger_inputs(batch)
                             pred_entity_labels = self._ner_model[self._config.active_lang].predict(batch, word_reprs)
 

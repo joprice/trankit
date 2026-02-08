@@ -109,7 +109,7 @@ def format_row(r):
     )
 
 
-def run_benchmarks(embedding):
+def run_benchmarks(embedding, gpu=True):
     print(f"\n{'=' * 70}")
     print(f"Trankit Inference Benchmark")
     print(f"Embedding: {embedding}")
@@ -118,7 +118,7 @@ def run_benchmarks(embedding):
 
     print("Initializing pipeline...")
     t0 = time.perf_counter()
-    p = trankit.Pipeline("english", embedding=embedding)
+    p = trankit.Pipeline("english", embedding=embedding, gpu=gpu)
     init_time = time.perf_counter() - t0
     device_type = str(p._config.device.type)
     print(f"Pipeline initialized in {init_time:.2f}s (device: {device_type})\n")
@@ -176,5 +176,8 @@ def run_benchmarks(embedding):
 
 
 if __name__ == "__main__":
-    embedding = sys.argv[1] if len(sys.argv) > 1 else "xlm-roberta-base"
-    run_benchmarks(embedding)
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    flags = [a for a in sys.argv[1:] if a.startswith("--")]
+    embedding = args[0] if args else "xlm-roberta-base"
+    gpu = "--cpu" not in flags
+    run_benchmarks(embedding, gpu=gpu)

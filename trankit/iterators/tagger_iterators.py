@@ -189,22 +189,21 @@ class TaggerDatasetLive(Dataset):
             batch_xpos_ids.append(inst.xpos_type_idxs + [0] * (max_word_num - inst.word_num))
             batch_feats_ids.append(inst.feats_type_idxs + [0] * (max_word_num - inst.word_num))
 
-        device = self.config.device
-        batch_piece_idxs = torch.tensor(batch_piece_idxs, dtype=torch.long, device=device)
-        batch_attention_masks = torch.tensor(batch_attention_masks, dtype=torch.float16, device=device)
-        batch_edit_type_idxs = torch.tensor(batch_edit_type_idxs, dtype=torch.long, device=device)
-        batch_word_span_idxs = torch.tensor(batch_word_span_idxs, dtype=torch.long, device=device)
+        batch_piece_idxs = torch.tensor(batch_piece_idxs, dtype=torch.long)
+        batch_attention_masks = torch.tensor(batch_attention_masks, dtype=torch.float16)
+        batch_edit_type_idxs = torch.tensor(batch_edit_type_idxs, dtype=torch.long)
+        batch_word_span_idxs = torch.tensor(batch_word_span_idxs, dtype=torch.long)
 
-        batch_upos_type_idxs = torch.tensor(batch_upos_type_idxs, dtype=torch.long, device=device)
-        batch_xpos_type_idxs = torch.tensor(batch_xpos_type_idxs, dtype=torch.long, device=device)
-        batch_feats_type_idxs = torch.tensor(batch_feats_type_idxs, dtype=torch.long, device=device)
+        batch_upos_type_idxs = torch.tensor(batch_upos_type_idxs, dtype=torch.long)
+        batch_xpos_type_idxs = torch.tensor(batch_xpos_type_idxs, dtype=torch.long)
+        batch_feats_type_idxs = torch.tensor(batch_feats_type_idxs, dtype=torch.long)
 
-        batch_upos_ids = torch.tensor(batch_upos_ids, dtype=torch.long, device=device)
-        batch_xpos_ids = torch.tensor(batch_xpos_ids, dtype=torch.long, device=device)
+        batch_upos_ids = torch.tensor(batch_upos_ids, dtype=torch.long)
+        batch_xpos_ids = torch.tensor(batch_xpos_ids, dtype=torch.long)
 
-        batch_head_ids = torch.tensor(batch_head_ids, dtype=torch.long, device=device)
-        batch_deprel_ids = torch.tensor(batch_deprel_ids, dtype=torch.long, device=device)
-        batch_word_mask = torch.tensor(batch_word_mask, dtype=torch.bool, device=device)
+        batch_head_ids = torch.tensor(batch_head_ids, dtype=torch.long)
+        batch_deprel_ids = torch.tensor(batch_deprel_ids, dtype=torch.long)
+        batch_word_mask = torch.tensor(batch_word_mask, dtype=torch.bool)
 
         return Batch(
             sent_index=batch_sent_index,

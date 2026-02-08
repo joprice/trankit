@@ -1,6 +1,9 @@
 # Trankit CUDA Verification - Copy this entire cell into Colab
 # First: Runtime > Change runtime type > GPU (T4)
 
+# ── Config ──────────────────────────────────────────────────
+EMBEDDING = "xlm-roberta-base"  # or "xlm-roberta-large"
+
 # ── 1. Check CUDA ────────────────────────────────────────────
 import torch
 if not torch.cuda.is_available():
@@ -52,7 +55,7 @@ print("=" * 70)
 torch.cuda.empty_cache()
 
 t0 = time.perf_counter()
-p = Pipeline("english", gpu=True, cache_dir="./cache")
+p = Pipeline("english", gpu=True, cache_dir="./cache", embedding=EMBEDDING)
 init_time = time.perf_counter() - t0
 device_type = str(p._config.device.type)
 print(f"Device: {device_type}")
@@ -228,7 +231,7 @@ for label_suffix, text in [("short", SHORT_TEXT), ("long", LONG_TEXT)]:
 # ── 7. Save results ──────────────────────────────────────────
 gpu_name = torch.cuda.get_device_name(0).replace(" ", "-")
 out = {
-    "embedding": "xlm-roberta-base",
+    "embedding": EMBEDDING,
     "device": device_type,
     "gpu_name": torch.cuda.get_device_name(0),
     "vram_mb": round(gpu_mb()),
@@ -242,7 +245,7 @@ out = {
     "results": bench_results,
 }
 
-out_path = f"benchmark_results_xlm-roberta-base_{device_type}_{gpu_name}.json"
+out_path = f"benchmark_results_{EMBEDDING}_{device_type}_{gpu_name}.json"
 with open(out_path, "w") as f:
     json.dump(out, f, indent=2)
 print(f"\nResults saved to {out_path}")

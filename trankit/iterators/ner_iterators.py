@@ -178,12 +178,11 @@ class NERDatasetLive(Dataset):
             batch_entity_label_idxs.append(inst.entity_label_idxs +
                                            [0] * (max_word_num - inst.word_num))
 
-        device = self.config.device
-        batch_piece_idxs = torch.tensor(batch_piece_idxs, dtype=torch.long, device=device)
-        batch_attention_masks = torch.tensor(batch_attention_masks, dtype=torch.float, device=device)
-        batch_word_num = torch.tensor(batch_word_num, dtype=torch.long, device=self.config.device)
-        batch_word_mask = torch.tensor(batch_word_mask, dtype=torch.long, device=self.config.device).eq(0)
-        batch_entity_label_idxs = torch.tensor(batch_entity_label_idxs, dtype=torch.long, device=self.config.device)
+        batch_piece_idxs = torch.tensor(batch_piece_idxs, dtype=torch.long)
+        batch_attention_masks = torch.tensor(batch_attention_masks, dtype=torch.float)
+        batch_word_num = torch.tensor(batch_word_num, dtype=torch.long)
+        batch_word_mask = torch.tensor(batch_word_mask, dtype=torch.long).eq(0)
+        batch_entity_label_idxs = torch.tensor(batch_entity_label_idxs, dtype=torch.long)
 
         return Batch(
             sent_index=batch_sent_index,
