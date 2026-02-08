@@ -14,7 +14,7 @@ from .utils.chuliu_edmonds import *
 from adapters.loading import AdapterLoader
 from datetime import datetime
 import langid
-import gc
+
 import os
 from transformers import XLMRobertaTokenizer
 
@@ -144,7 +144,7 @@ class Pipeline:
             self.set_active(lang)
 
     def _setup_config(self, lang):
-        torch.cuda.empty_cache()
+
         # decide whether to run on GPU or CPU
         if self._gpu and torch.cuda.is_available():
             self._use_gpu = True
@@ -404,7 +404,7 @@ class Pipeline:
 
             wordpiece_ends.extend(wp_ends)
             paragraph_indexes.extend(para_ids)
-            torch.cuda.empty_cache()
+    
         # mapping
         para_id_to_wp_pred_labels = defaultdict(list)
 
@@ -493,9 +493,9 @@ class Pipeline:
         del all_para_texts 
         del all_para_starts 
 
-        gc.collect()
 
-        torch.cuda.empty_cache()
+
+
         return {TEXT: in_doc, SENTENCES: sentences, LANG: self.active_lang}
 
     def tokenize(self, input, is_sent=False):
@@ -624,12 +624,12 @@ class Pipeline:
         del all_para_texts 
         del all_para_starts 
 
-        gc.collect()
+
         # multi-word expansion if required
         if tbname2training_id[self._config.treebank_name] % 2 == 1:
             tokens = self._mwt_expand([{TOKENS: tokens}])[0][TOKENS]
 
-        torch.cuda.empty_cache()
+
         return tokens
 
     def _tokenize_doc(self, in_doc):  # assuming input is a document
@@ -754,11 +754,11 @@ class Pipeline:
         del all_para_texts 
         del all_para_starts 
 
-        gc.collect()
+
         # multi-word expansion if required
         if tbname2training_id[self._config.treebank_name] % 2 == 1:
             doc = self._mwt_expand(doc)
-        torch.cuda.empty_cache()
+
         return doc
 
     def posdep(self, input, is_sent=False):
@@ -881,10 +881,10 @@ class Pipeline:
             del deprel_seqs 
             del pred_tokens 
 
-        gc.collect()
+
 
         tagged_doc = get_output_doc(posdep_sent, test_set.conllu_doc)
-        torch.cuda.empty_cache()
+
         return tagged_doc[0][TOKENS]
 
     def _posdep_doc(self, in_doc):  # assuming input is a document
@@ -967,9 +967,9 @@ class Pipeline:
             del deprel_seqs 
             del pred_tokens 
 
-        gc.collect()
+
         tagged_doc = get_output_doc(dposdep_doc, test_set.conllu_doc)
-        torch.cuda.empty_cache()
+
         return tagged_doc
 
     def lemmatize(self, input, is_sent=False):
@@ -1021,7 +1021,7 @@ class Pipeline:
             self._lemma_model[self._config.active_lang].predict([{ID: 1, TOKENS: in_sent}], obmit_tag, skip_dict_seq2seq=skip_dict_seq2seq)[0][
                 TOKENS]
 
-        gc.collect()
+
         return lemmatized_sent
 
     def _lemmatize_doc(self, in_doc, obmit_tag=False, skip_dict_seq2seq=None):  # assuming input is a document
@@ -1031,12 +1031,12 @@ class Pipeline:
 
         lemmatized_doc = self._lemma_model[self._config.active_lang].predict(in_doc, obmit_tag, skip_dict_seq2seq=skip_dict_seq2seq)
 
-        gc.collect()
+
         return lemmatized_doc
 
     def _mwt_expand(self, tokenized_doc):
         expanded_doc = self._mwt_model[self._config.active_lang].predict(tokenized_doc)
-        gc.collect()
+
         return expanded_doc
 
     def ner(self, input, is_sent=False):
@@ -1122,8 +1122,8 @@ class Pipeline:
             
             del pred_entity_labels
 
-        torch.cuda.empty_cache()
-        gc.collect()
+
+
         return dner_doc[0][TOKENS]
 
     def _ner_doc(self, in_doc):  # assuming input is a document
@@ -1160,8 +1160,8 @@ class Pipeline:
 
             del pred_entity_labels
 
-        torch.cuda.empty_cache()
-        gc.collect()
+
+
         return dner_doc
 
     def __call__(self, input, is_sent=False, skip_dict_seq2seq=None):
