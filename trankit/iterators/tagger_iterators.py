@@ -34,10 +34,6 @@ class TaggerDatasetLive(Dataset):
         self.conllu_doc = []
         self.tokenized_doc = tokenized_doc
 
-        language = treebank2lang[self.treebank_name]
-        self.vocabs_fpath = os.path.join(self.config._cache_dir, self.config.embedding_name, language,
-                                         '{}.vocabs.json'.format(language))
-
         self.vocabs = {}
         self.data = []
         self.load_data()
@@ -49,8 +45,7 @@ class TaggerDatasetLive(Dataset):
         return self.data[item]
 
     def load_data(self):
-        with open(self.vocabs_fpath) as f:
-            self.vocabs = json.load(f)
+        self.vocabs = self.config.vocabs[self.config.treebank_name]
 
         self.data, self.conllu_doc = get_examples_from_conllu(
             self.wordpiece_splitter,
@@ -69,18 +64,19 @@ class TaggerDatasetLive(Dataset):
             if len(flat_pieces) > self.max_input_length - 2:
                 sub_insts = []
                 cur_inst = deepcopy(inst)
-                for key in ['words', 'word_ids', LEMMA, UPOS, XPOS, FEATS, HEAD, DEPREL, 'flat_pieces']:
+                for key in ['words', 'word_ids', LEMMA, UPOS, XPOS, FEATS, HEAD, DEPREL, 'flat_pieces', 'pieces']:
                     cur_inst[key] = []
 
                 for i in range(len(inst['words'])):
                     for key in ['words', 'word_ids', LEMMA, UPOS, XPOS, FEATS, HEAD, DEPREL]:
                         cur_inst[key].append(inst[key][i])
+                    cur_inst['pieces'].append(pieces[i])
                     cur_inst['flat_pieces'].extend(pieces[i])
                     if len(cur_inst['flat_pieces']) >= self.max_input_length - 10:
                         sub_insts.append(cur_inst)
 
                         cur_inst = deepcopy(inst)
-                        for key in ['words', 'word_ids', LEMMA, UPOS, XPOS, FEATS, HEAD, DEPREL, 'flat_pieces']:
+                        for key in ['words', 'word_ids', LEMMA, UPOS, XPOS, FEATS, HEAD, DEPREL, 'flat_pieces', 'pieces']:
                             cur_inst[key] = []
 
                 if len(cur_inst['flat_pieces']) > 0:
@@ -90,6 +86,7 @@ class TaggerDatasetLive(Dataset):
                 # 'word_ids' is used for later filling predictions into the right place
                 new_data.extend(sub_insts)
             else:
+                inst['pieces'] = pieces
                 new_data.append(inst)
         self.data = new_data
         
@@ -97,11 +94,7 @@ class TaggerDatasetLive(Dataset):
         wordpiece_splitter = self.wordpiece_splitter
         data = []
         for inst in self.data:
-            words = inst['words']
-            pieces = [[p for p in wordpiece_splitter.tokenize(w) if p != '▁'] for w in words]
-            for ps in pieces:
-                if len(ps) == 0:
-                    ps += ['-']
+            pieces = inst['pieces']
             word_lens = [len(x) for x in pieces]
             assert 0 not in word_lens
             flat_pieces = [p for ps in pieces for p in ps]
@@ -123,7 +116,6 @@ class TaggerDatasetLive(Dataset):
             assert len(piece_idxs) <= self.max_input_length
 
             attn_masks = [1] * len(piece_idxs)
-            piece_idxs = piece_idxs
             assert len(piece_idxs) > 0
 
             edit_type_idxs = [self.vocabs[LEMMA][edit] for edit in inst[LEMMA]]
