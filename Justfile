@@ -27,6 +27,11 @@ bench-all:
     just bench xlm-roberta-base
     just bench xlm-roberta-large
 
+bench-gpu:
+    set -eu
+    just bench xlm-roberta-base
+    just bench xlm-roberta-large
+
 # run correctness then benchmark (both gpu)
 verify: test (bench)
 

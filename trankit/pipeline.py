@@ -440,11 +440,9 @@ class Pipeline:
         all_para_texts = []
         all_para_starts = []
         ##############
-        cloned_raw_text = deepcopy(in_doc)
         global_offset = 0
         for para_index, para_text in enumerate(paragraphs):
-            cloned_raw_text, start_char_idx = get_start_char_idx(para_text, cloned_raw_text)
-            start_char_idx += global_offset
+            start_char_idx = in_doc.index(para_text, global_offset)
             global_offset = start_char_idx + len(para_text)
             all_para_starts.append(start_char_idx)
 
@@ -504,10 +502,9 @@ class Pipeline:
         del paragraph_indexes
 
         del para_id_to_wp_pred_labels
-        del cloned_raw_text
 
-        del all_wp_preds 
-        del all_para_texts 
+        del all_wp_preds
+        del all_para_texts
         del all_para_starts 
 
 
@@ -577,11 +574,9 @@ class Pipeline:
         all_para_texts = []
         all_para_starts = []
         ##############
-        cloned_raw_text = deepcopy(in_sent)
         global_offset = 0
         for para_index, para_text in enumerate(paragraphs):
-            cloned_raw_text, start_char_idx = get_start_char_idx(para_text, cloned_raw_text)
-            start_char_idx += global_offset
+            start_char_idx = in_sent.index(para_text, global_offset)
             global_offset = start_char_idx + len(para_text)
             all_para_starts.append(start_char_idx)
 
@@ -634,14 +629,13 @@ class Pipeline:
 
         del wordpiece_pred_labels
         del wordpiece_ends
-        del paragraph_indexes 
+        del paragraph_indexes
 
-        del para_id_to_wp_pred_labels 
-        del cloned_raw_text
+        del para_id_to_wp_pred_labels
 
-        del all_wp_preds 
-        del all_para_texts 
-        del all_para_starts 
+        del all_wp_preds
+        del all_para_texts
+        del all_para_starts
 
 
         # multi-word expansion if required
@@ -698,11 +692,9 @@ class Pipeline:
         all_para_texts = []
         all_para_starts = []
         ##############
-        cloned_raw_text = deepcopy(in_doc)
         global_offset = 0
         for para_index, para_text in enumerate(paragraphs):
-            cloned_raw_text, start_char_idx = get_start_char_idx(para_text, cloned_raw_text)
-            start_char_idx += global_offset
+            start_char_idx = in_doc.index(para_text, global_offset)
             global_offset = start_char_idx + len(para_text)
             all_para_starts.append(start_char_idx)
 
@@ -766,14 +758,13 @@ class Pipeline:
 
         del wordpiece_pred_labels
         del wordpiece_ends
-        del paragraph_indexes 
+        del paragraph_indexes
 
-        del para_id_to_wp_pred_labels 
-        del cloned_raw_text
+        del para_id_to_wp_pred_labels
 
-        del all_wp_preds 
-        del all_para_texts 
-        del all_para_starts 
+        del all_wp_preds
+        del all_para_texts
+        del all_para_starts
 
 
         # multi-word expansion if required
@@ -824,8 +815,7 @@ class Pipeline:
     def _posdep_sent(self, in_sent):  # assuming input is a sentence
         if type(in_sent) == str:  # input sentence is an untokenized string in this case
             in_sent = self._tokenize_sent(in_sent)
-        posdep_sent = deepcopy(in_sent)
-        posdep_sent = [{ID: 1, TOKENS: posdep_sent}]
+        posdep_sent = [{ID: 1, TOKENS: in_sent}]
         # load outputs of tokenizer
         config = self._config
         test_set = TaggerDatasetLive(
@@ -909,11 +899,10 @@ class Pipeline:
     def _posdep_doc(self, in_doc):  # assuming input is a document
         if type(in_doc) == str:  # in_doc is an untokenized string in this case
             in_doc = self._tokenize_doc(in_doc)
-        dposdep_doc = deepcopy(in_doc)
         # load outputs of tokenizer
         config = self._config
         test_set = TaggerDatasetLive(
-            tokenized_doc=dposdep_doc,
+            tokenized_doc=in_doc,
             wordpiece_splitter=config.wordpiece_splitter,
             config=config
         )
@@ -985,7 +974,7 @@ class Pipeline:
             del pred_tokens
 
 
-        tagged_doc = get_output_doc(dposdep_doc, test_set.conllu_doc)
+        tagged_doc = get_output_doc(in_doc, test_set.conllu_doc)
 
         return tagged_doc
 
