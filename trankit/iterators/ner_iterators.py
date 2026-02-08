@@ -84,6 +84,37 @@ class NERDatasetLive(Dataset):
         # load vocab
         self.vocabs = self.config.ner_vocabs[self.config.active_lang]
 
+    @classmethod
+    def from_tagger_data(cls, config, tagger_dataset):
+        """Build NER dataset directly from a numberized TaggerDatasetLive,
+        reusing its piece_idxs/attention_masks/word_lens to avoid redundant
+        wordpiece tokenization.
+
+        Only valid when MWT expansion is not used (tagger and NER process
+        the same words). The tagger uses 1-based word_ids while NER uses
+        0-based, so we convert here."""
+        obj = cls.__new__(cls)
+        obj.config = config
+        obj.wordpiece_splitter = config.wordpiece_splitter
+        obj.max_input_length = 512
+        obj.vocabs = config.ner_vocabs[config.active_lang]
+        # Convert tagger instances to NER instances, remapping word_ids
+        # from 1-based (tagger) to 0-based (NER)
+        obj.data = [
+            Instance(
+                sent_index=inst.sent_index,
+                word_ids=[wid - 1 for wid in inst.word_ids],
+                words=inst.words,
+                word_num=inst.word_num,
+                piece_idxs=inst.piece_idxs,
+                attention_masks=inst.attention_masks,
+                word_lens=inst.word_lens,
+                entity_label_idxs=[0] * inst.word_num,
+            )
+            for inst in tagger_dataset.data
+        ]
+        return obj
+
     def __len__(self):
         return len(self.data)
 

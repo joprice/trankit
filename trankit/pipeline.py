@@ -1186,10 +1186,95 @@ class Pipeline:
                     self._detect_lang_and_switch(text=input)
 
                 ori_text = deepcopy(input)
-                tagged_sent = self._posdep_sent(input)
+                # Inline tagger flow so we can reuse the dataset for NER
+                tokenized_sent = self._tokenize_sent(input)
+                posdep_sent = [{ID: 1, TOKENS: tokenized_sent}]
+
+                config = self._config
+                tagger_test_set = TaggerDatasetLive(
+                    tokenized_doc=posdep_sent,
+                    wordpiece_splitter=config.wordpiece_splitter,
+                    config=config
+                )
+                tagger_test_set.numberize()
+
+                self._load_adapter_weights(model_name='tagger')
+
+                eval_batch_size = tbname2tagbatchsize.get(self._config.treebank_name, self._tagbatchsize)
+                if self._config.embedding_name == 'xlm-roberta-large':
+                    eval_batch_size = int(eval_batch_size / 3)
+
+                for batch in DataLoader(tagger_test_set,
+                                        batch_size=eval_batch_size,
+                                        shuffle=False, collate_fn=tagger_test_set.collate_fn):
+                    batch_size = len(batch.word_num)
+
+                    word_reprs, cls_reprs = self._embedding_layers.get_tagger_inputs(batch)
+                    predictions = self._tagger[self._config.active_lang].predict(batch, word_reprs, cls_reprs)
+                    predicted_upos = predictions[0].data.cpu().numpy().tolist()
+                    predicted_xpos = predictions[1].data.cpu().numpy().tolist()
+                    predicted_feats = predictions[2].data.cpu().numpy().tolist()
+
+                    predicted_dep = predictions[3]
+                    sentlens = [l + 1 for l in batch.word_num]
+                    head_seqs = [chuliu_edmonds_one_root(adj[:l, :l])[1:] for adj, l in
+                                 zip(predicted_dep[0], sentlens)]
+                    deprel_seqs = [
+                        [self._config.itos[self._config.active_lang][DEPREL][predicted_dep[1][i][j + 1][h]] for j, h in
+                         enumerate(hs)] for i, hs in enumerate(head_seqs)]
+
+                    pred_tokens = [[[head_seqs[i][j], deprel_seqs[i][j]] for j in range(sentlens[i] - 1)] for i in
+                                   range(batch_size)]
+
+                    for bid in range(batch_size):
+                        sentid = batch.sent_index[bid]
+                        for i in range(batch.word_num[bid]):
+                            wordid = batch.word_ids[bid][i]
+                            tagger_test_set.conllu_doc[sentid][wordid][UPOS] = self._config.itos[self._config.active_lang][UPOS][predicted_upos[bid][i]]
+                            tagger_test_set.conllu_doc[sentid][wordid][XPOS] = self._config.itos[self._config.active_lang][XPOS][predicted_xpos[bid][i]]
+                            tagger_test_set.conllu_doc[sentid][wordid][FEATS] = self._config.itos[self._config.active_lang][FEATS][predicted_feats[bid][i]]
+                            tagger_test_set.conllu_doc[sentid][wordid][HEAD] = int(pred_tokens[bid][i][0])
+                            tagger_test_set.conllu_doc[sentid][wordid][DEPREL] = pred_tokens[bid][i][1]
+
+                    del predictions
+                    del sentlens
+                    del head_seqs
+                    del deprel_seqs
+                    del pred_tokens
+
+                tagged_doc = get_output_doc(posdep_sent, tagger_test_set.conllu_doc)
+                tagged_sent = tagged_doc[0][TOKENS]
                 out = self._lemmatize_sent(tagged_sent, skip_dict_seq2seq=skip_dict_seq2seq)
-                if self._config.active_lang in langwithner:  # ner if possible
-                    out = self._ner_sent(out)
+
+                if self._config.active_lang in langwithner:
+                    has_mwt = tbname2training_id[self._config.treebank_name] % 2 == 1
+                    if has_mwt:
+                        # MWT changes word structure; fall back to standard NER
+                        out = self._ner_sent(out)
+                    else:
+                        # Reuse tagger dataset for NER instead of re-tokenizing
+                        dner_doc = [{ID: 1, TOKENS: out}]
+                        ner_test_set = NERDatasetLive.from_tagger_data(self._config, tagger_test_set)
+
+                        self._load_adapter_weights(model_name='ner')
+
+                        for batch in DataLoader(ner_test_set,
+                                                batch_size=eval_batch_size,
+                                                shuffle=False, collate_fn=ner_test_set.collate_fn):
+                            word_reprs, cls_reprs = self._embedding_layers.get_tagger_inputs(batch)
+                            pred_entity_labels = self._ner_model[self._config.active_lang].predict(batch, word_reprs)
+
+                            batch_size = len(batch.word_num)
+                            for bid in range(batch_size):
+                                sentid = batch.sent_index[bid]
+                                for i in range(batch.word_num[bid]):
+                                    wordid = batch.word_ids[bid][i]
+                                    dner_doc[sentid][TOKENS][wordid][NER] = pred_entity_labels[bid][i]
+
+                            del pred_entity_labels
+
+                        out = dner_doc[0][TOKENS]
+
                 final = {TEXT: ori_text, TOKENS: out, LANG: self.active_lang}
         else:
             assert is_string(input) or is_list_list_strings(
@@ -1213,10 +1298,92 @@ class Pipeline:
                     self._detect_lang_and_switch(text=input)
 
                 ori_text = deepcopy(input)
-                tagged_doc = self._posdep_doc(in_doc=input)
+                # Inline tagger flow so we can reuse the dataset for NER
+                in_doc = self._tokenize_doc(in_doc=input)
+                config = self._config
+                tagger_test_set = TaggerDatasetLive(
+                    tokenized_doc=in_doc,
+                    wordpiece_splitter=config.wordpiece_splitter,
+                    config=config
+                )
+                tagger_test_set.numberize()
+
+                self._load_adapter_weights(model_name='tagger')
+
+                eval_batch_size = tbname2tagbatchsize.get(self._config.treebank_name, self._tagbatchsize)
+                if self._config.embedding_name == 'xlm-roberta-large':
+                    eval_batch_size = int(eval_batch_size / 3)
+
+                for batch in DataLoader(tagger_test_set,
+                                        batch_size=eval_batch_size,
+                                        shuffle=False, collate_fn=tagger_test_set.collate_fn):
+                    batch_size = len(batch.word_num)
+
+                    word_reprs, cls_reprs = self._embedding_layers.get_tagger_inputs(batch)
+                    predictions = self._tagger[self._config.active_lang].predict(batch, word_reprs, cls_reprs)
+                    predicted_upos = predictions[0].data.cpu().numpy().tolist()
+                    predicted_xpos = predictions[1].data.cpu().numpy().tolist()
+                    predicted_feats = predictions[2].data.cpu().numpy().tolist()
+
+                    predicted_dep = predictions[3]
+                    sentlens = [l + 1 for l in batch.word_num]
+                    head_seqs = [chuliu_edmonds_one_root(adj[:l, :l])[1:] for adj, l in
+                                 zip(predicted_dep[0], sentlens)]
+                    deprel_seqs = [
+                        [self._config.itos[self._config.active_lang][DEPREL][predicted_dep[1][i][j + 1][h]] for j, h in
+                         enumerate(hs)] for i, hs in enumerate(head_seqs)]
+
+                    pred_tokens = [[[head_seqs[i][j], deprel_seqs[i][j]] for j in range(sentlens[i] - 1)] for i in
+                                   range(batch_size)]
+
+                    for bid in range(batch_size):
+                        sentid = batch.sent_index[bid]
+                        for i in range(batch.word_num[bid]):
+                            wordid = batch.word_ids[bid][i]
+                            tagger_test_set.conllu_doc[sentid][wordid][UPOS] = self._config.itos[self._config.active_lang][UPOS][predicted_upos[bid][i]]
+                            tagger_test_set.conllu_doc[sentid][wordid][XPOS] = self._config.itos[self._config.active_lang][XPOS][predicted_xpos[bid][i]]
+                            tagger_test_set.conllu_doc[sentid][wordid][FEATS] = self._config.itos[self._config.active_lang][FEATS][predicted_feats[bid][i]]
+                            tagger_test_set.conllu_doc[sentid][wordid][HEAD] = int(pred_tokens[bid][i][0])
+                            tagger_test_set.conllu_doc[sentid][wordid][DEPREL] = pred_tokens[bid][i][1]
+
+                    del predictions
+                    del sentlens
+                    del head_seqs
+                    del deprel_seqs
+                    del pred_tokens
+
+                tagged_doc = get_output_doc(in_doc, tagger_test_set.conllu_doc)
                 out = self._lemmatize_doc(tagged_doc, skip_dict_seq2seq=skip_dict_seq2seq)
-                if self._config.active_lang in langwithner:  # ner if possible
-                    out = self._ner_doc(out)
+
+                if self._config.active_lang in langwithner:
+                    has_mwt = tbname2training_id[self._config.treebank_name] % 2 == 1
+                    if has_mwt:
+                        # MWT changes word structure; fall back to standard NER
+                        out = self._ner_doc(out)
+                    else:
+                        # Reuse tagger dataset for NER instead of re-tokenizing
+                        dner_doc = out
+                        ner_test_set = NERDatasetLive.from_tagger_data(self._config, tagger_test_set)
+
+                        self._load_adapter_weights(model_name='ner')
+
+                        for batch in DataLoader(ner_test_set,
+                                                batch_size=eval_batch_size,
+                                                shuffle=False, collate_fn=ner_test_set.collate_fn):
+                            word_reprs, cls_reprs = self._embedding_layers.get_tagger_inputs(batch)
+                            pred_entity_labels = self._ner_model[self._config.active_lang].predict(batch, word_reprs)
+
+                            batch_size = len(batch.word_num)
+                            for bid in range(batch_size):
+                                sentid = batch.sent_index[bid]
+                                for i in range(batch.word_num[bid]):
+                                    wordid = batch.word_ids[bid][i]
+                                    dner_doc[sentid][TOKENS][wordid][NER] = pred_entity_labels[bid][i]
+
+                            del pred_entity_labels
+
+                        out = dner_doc
+
                 final = {TEXT: ori_text, SENTENCES: out, LANG: self.active_lang}
         return final
 
