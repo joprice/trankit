@@ -10,6 +10,7 @@ embedding defaults to xlm-roberta-base.
 """
 
 import cProfile
+import inspect
 import math
 import os
 import sys
@@ -18,6 +19,15 @@ import statistics
 import json
 import torch
 import trankit
+
+
+def _pipeline_kwargs(embedding, gpu, cache_adapters):
+    """Build Pipeline constructor kwargs, skipping cache_adapters if upstream."""
+    kwargs = {"embedding": embedding, "gpu": gpu}
+    sig = inspect.signature(trankit.Pipeline.__init__)
+    if "cache_adapters" in sig.parameters:
+        kwargs["cache_adapters"] = cache_adapters
+    return kwargs
 
 WARMUP_RUNS = 2
 BENCHMARK_RUNS = 10
@@ -190,7 +200,7 @@ def run_benchmarks(embedding, gpu=True, profile_path=None, cache_adapters=True):
 
     print("Initializing pipeline...")
     t0 = time.perf_counter()
-    p = trankit.Pipeline("english", embedding=embedding, gpu=gpu, cache_adapters=cache_adapters)
+    p = trankit.Pipeline("english", **_pipeline_kwargs(embedding, gpu, cache_adapters))
     init_time = time.perf_counter() - t0
     device_type = str(p._config.device.type)
     print(f"Pipeline initialized in {init_time:.2f}s (device: {device_type})\n")
@@ -283,7 +293,7 @@ def run_throughput_benchmark(embedding, gpu=True, cache_adapters=True,
     # 1. Initialize pipeline
     print("Initializing pipeline...")
     t0 = time.perf_counter()
-    p = trankit.Pipeline(first_lang, embedding=embedding, gpu=gpu, cache_adapters=cache_adapters)
+    p = trankit.Pipeline(first_lang, **_pipeline_kwargs(embedding, gpu, cache_adapters))
     init_time = time.perf_counter() - t0
     device_type = str(p._config.device.type)
     print(f"Pipeline initialized in {init_time:.2f}s (device: {device_type})")

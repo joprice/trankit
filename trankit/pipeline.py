@@ -60,24 +60,24 @@ def _active_adapter_names(xlmr):
 
 
 def is_string(input):
-    if type(input) == str and len(input.strip()) > 0:
+    if isinstance(input, str) and len(input.strip()) > 0:
         return True
     return False
 
 
 def is_list_strings(input):
-    if type(input) == list and len(input) > 0:
+    if isinstance(input, list) and len(input) > 0:
         for element in input:
-            if not (type(element) == str and not element.isspace()):
+            if not (isinstance(element, str) and not element.isspace()):
                 return False
         return True
     return False
 
 
 def is_list_list_strings(input):
-    if type(input) == list and len(input) > 0 and type(input[0]) == list and len(input[0]) > 0:
+    if isinstance(input, list) and len(input) > 0 and isinstance(input[0], list) and len(input[0]) > 0:
         for element in input[0]:
-            if not (type(element) == str and not element.isspace()):
+            if not (isinstance(element, str) and not element.isspace()):
                 return False
         return True
     return False
@@ -527,9 +527,7 @@ class Pipeline:
         # get predictions
         corpus_text = in_doc
 
-        paragraphs = [pt.rstrip() for pt in
-                      NEWLINE_WHITESPACE_RE.split(corpus_text) if
-                      len(pt.rstrip()) > 0]
+        paragraphs = [s for pt in NEWLINE_WHITESPACE_RE.split(corpus_text) if (s := pt.rstrip())]
         all_wp_preds = []
         all_para_texts = []
         all_para_starts = []
@@ -568,7 +566,7 @@ class Pipeline:
                         continue
                     additional_info = {DSPAN: (para_start + local_position - len(tok),
                                                para_start + local_position)}
-                    current_sent += [(tok, wp_p, additional_info)]
+                    current_sent.append((tok, wp_p, additional_info))
                     current_tok = ''
                     if (wp_p == 2 or wp_p == 4):
                         sent_span = (current_sent[0][2][DSPAN][0], current_sent[-1][2][DSPAN][1])
@@ -583,26 +581,13 @@ class Pipeline:
                 if len(tok) > 0:
                     additional_info = {DSPAN: (para_start + local_position - len(tok),
                                                para_start + local_position)}
-                    current_sent += [(tok, 2, additional_info)]
+                    current_sent.append((tok, 2, additional_info))
 
             if len(current_sent):
                 sent_span = (current_sent[0][2][DSPAN][0], current_sent[-1][2][DSPAN][1])
                 sentences.append(
                     {ID: len(sentences) + 1, TEXT: in_doc[sent_span[0]: sent_span[1]],
                      DSPAN: (sent_span[0], sent_span[1])})
-
-        del wordpiece_pred_labels
-        del wordpiece_ends
-        del paragraph_indexes
-
-        del para_id_to_wp_pred_labels
-
-        del all_wp_preds
-        del all_para_texts
-        del all_para_starts 
-
-
-
 
         return {TEXT: in_doc, SENTENCES: sentences, LANG: self.active_lang}
 
@@ -612,7 +597,7 @@ class Pipeline:
         if self.auto_mode:
             self._detect_lang_and_switch(text=input)
 
-        if type(input) == str and input.isspace():
+        if isinstance(input, str) and input.isspace():
             return []
         ori_text = input
         if is_sent:
@@ -661,9 +646,7 @@ class Pipeline:
         # get predictions
         corpus_text = in_sent
 
-        paragraphs = [pt.rstrip() for pt in
-                      NEWLINE_WHITESPACE_RE.split(corpus_text) if
-                      len(pt.rstrip()) > 0]
+        paragraphs = [s for pt in NEWLINE_WHITESPACE_RE.split(corpus_text) if (s := pt.rstrip())]
         all_wp_preds = []
         all_para_texts = []
         all_para_starts = []
@@ -703,10 +686,10 @@ class Pipeline:
                     additional_info = {'current_len': len(tokens),
                                        SSPAN: (para_start + local_position - len(tok),
                                                para_start + local_position)}
-                    current_sent += [(tok, wp_p, additional_info)]
+                    current_sent.append((tok, wp_p, additional_info))
                     current_tok = ''
                     if (wp_p == 2 or wp_p == 4):
-                        tokens += get_output_sentence(current_sent)
+                        tokens.extend(get_output_sentence(current_sent))
                         current_sent = []
 
             if len(current_tok):
@@ -716,20 +699,10 @@ class Pipeline:
                     additional_info = {'current_len': len(tokens),
                                        SSPAN: (para_start + local_position - len(tok),
                                                para_start + local_position)}
-                    current_sent += [(tok, 2, additional_info)]
+                    current_sent.append((tok, 2, additional_info))
 
             if len(current_sent):
-                tokens += get_output_sentence(current_sent)
-
-        del wordpiece_pred_labels
-        del wordpiece_ends
-        del paragraph_indexes
-
-        del para_id_to_wp_pred_labels
-
-        del all_wp_preds
-        del all_para_texts
-        del all_para_starts
+                tokens.extend(get_output_sentence(current_sent))
 
 
         # multi-word expansion if required
@@ -779,9 +752,7 @@ class Pipeline:
         # get predictions
         corpus_text = in_doc
 
-        paragraphs = [pt.rstrip() for pt in
-                      NEWLINE_WHITESPACE_RE.split(corpus_text) if
-                      len(pt.rstrip()) > 0]
+        paragraphs = [s for pt in NEWLINE_WHITESPACE_RE.split(corpus_text) if (s := pt.rstrip())]
         all_wp_preds = []
         all_para_texts = []
         all_para_starts = []
@@ -819,7 +790,7 @@ class Pipeline:
                         continue
                     additional_info = {DSPAN: (para_start + local_position - len(tok),
                                                para_start + local_position)}
-                    current_sent += [(tok, wp_p, additional_info)]
+                    current_sent.append((tok, wp_p, additional_info))
                     current_tok = ''
                     if (wp_p == 2 or wp_p == 4):
                         processed_sent = get_output_sentence(current_sent)
@@ -838,7 +809,7 @@ class Pipeline:
                 if len(tok) > 0:
                     additional_info = {DSPAN: (para_start + local_position - len(tok),
                                                para_start + local_position)}
-                    current_sent += [(tok, 2, additional_info)]
+                    current_sent.append((tok, 2, additional_info))
 
             if len(current_sent):
                 processed_sent = get_output_sentence(current_sent)
@@ -849,17 +820,6 @@ class Pipeline:
                     TOKENS: processed_sent,
                     DSPAN: (processed_sent[0][DSPAN][0], processed_sent[-1][DSPAN][1])
                 })
-
-        del wordpiece_pred_labels
-        del wordpiece_ends
-        del paragraph_indexes
-
-        del para_id_to_wp_pred_labels
-
-        del all_wp_preds
-        del all_para_texts
-        del all_para_starts
-
 
         # multi-word expansion if required
         if tbname2training_id[self._config.treebank_name] % 2 == 1:
@@ -907,7 +867,7 @@ class Pipeline:
                 return {TEXT: ori_text, SENTENCES: self._posdep_doc(in_doc=input), LANG: self.active_lang}
 
     def _posdep_sent(self, in_sent):  # assuming input is a sentence
-        if type(in_sent) == str:  # input sentence is an untokenized string in this case
+        if isinstance(in_sent, str):  # input sentence is an untokenized string in this case
             in_sent = self._tokenize_sent(in_sent)
         posdep_sent = [{ID: 1, TOKENS: in_sent}]
         # load outputs of tokenizer
@@ -974,20 +934,12 @@ class Pipeline:
                     # deprel
                     test_set.conllu_doc[sentid][wordid][DEPREL] = pred_tokens[bid][i][1]
 
-            del predictions
-            del sentlens
-            del head_seqs
-            del deprel_seqs
-            del pred_tokens
-
-
-
         tagged_doc = get_output_doc(posdep_sent, test_set.conllu_doc)
 
         return tagged_doc[0][TOKENS]
 
     def _posdep_doc(self, in_doc):  # assuming input is a document
-        if type(in_doc) == str:  # in_doc is an untokenized string in this case
+        if isinstance(in_doc, str):  # in_doc is an untokenized string in this case
             in_doc = self._tokenize_doc(in_doc)
         # load outputs of tokenizer
         config = self._config
@@ -1053,13 +1005,6 @@ class Pipeline:
                     # deprel
                     test_set.conllu_doc[sentid][wordid][DEPREL] = pred_tokens[bid][i][1]
 
-            del predictions
-            del sentlens
-            del head_seqs
-            del deprel_seqs
-            del pred_tokens
-
-
         tagged_doc = get_output_doc(in_doc, test_set.conllu_doc)
 
         return tagged_doc
@@ -1105,7 +1050,7 @@ class Pipeline:
                 return {TEXT: ori_text, SENTENCES: self._lemmatize_doc(in_doc=input, obmit_tag=True), LANG: self.active_lang}
 
     def _lemmatize_sent(self, in_sent, obmit_tag=False, skip_dict_seq2seq=None):
-        if type(in_sent) == str:
+        if isinstance(in_sent, str):
             in_sent = self._tokenize_sent(in_sent)
             in_sent = self._posdep_sent(in_sent)
 
@@ -1117,7 +1062,7 @@ class Pipeline:
         return lemmatized_sent
 
     def _lemmatize_doc(self, in_doc, obmit_tag=False, skip_dict_seq2seq=None):  # assuming input is a document
-        if type(in_doc) == str:  # in_doc is a raw string in this case
+        if isinstance(in_doc, str):  # in_doc is a raw string in this case
             in_doc = self._tokenize_doc(in_doc)
             in_doc = self._posdep_doc(in_doc)
 
@@ -1180,7 +1125,7 @@ class Pipeline:
                 return {TEXT: ori_text, SENTENCES: self._ner_doc(in_doc=input), LANG: self.active_lang}
 
     def _ner_sent(self, in_sent):  # assuming input is a document
-        if type(in_sent) == str:
+        if isinstance(in_sent, str):
             in_sent = self._tokenize_sent(in_sent)
 
         dner_doc = [{ID: 1, TOKENS: in_sent}]
@@ -1214,14 +1159,10 @@ class Pipeline:
                     # NER tag
                     dner_doc[sentid][TOKENS][wordid][NER] = pred_entity_labels[bid][i]
             
-            del pred_entity_labels
-
-
-
         return dner_doc[0][TOKENS]
 
     def _ner_doc(self, in_doc):  # assuming input is a document
-        if type(in_doc) == str:
+        if isinstance(in_doc, str):
             in_doc = self._tokenize_doc(in_doc)
         dner_doc = in_doc
         sentences = [[t[TEXT] for t in sentence[TOKENS]] for sentence in dner_doc]
@@ -1253,10 +1194,6 @@ class Pipeline:
 
                     # NER tag
                     dner_doc[sentid][TOKENS][wordid][NER] = pred_entity_labels[bid][i]
-
-            del pred_entity_labels
-
-
 
         return dner_doc
 
@@ -1346,12 +1283,6 @@ class Pipeline:
                             tagger_test_set.conllu_doc[sentid][wordid][HEAD] = int(pred_tokens[bid][i][0])
                             tagger_test_set.conllu_doc[sentid][wordid][DEPREL] = pred_tokens[bid][i][1]
 
-                    del predictions
-                    del sentlens
-                    del head_seqs
-                    del deprel_seqs
-                    del pred_tokens
-
                 tagged_doc = get_output_doc(posdep_sent, tagger_test_set.conllu_doc)
                 tagged_sent = tagged_doc[0][TOKENS]
                 out = self._lemmatize_sent(tagged_sent, skip_dict_seq2seq=skip_dict_seq2seq)
@@ -1382,8 +1313,6 @@ class Pipeline:
                                 for i in range(batch.word_num[bid]):
                                     wordid = batch.word_ids[bid][i]
                                     dner_doc[sentid][TOKENS][wordid][NER] = pred_entity_labels[bid][i]
-
-                            del pred_entity_labels
 
                         out = dner_doc[0][TOKENS]
 
@@ -1463,12 +1392,6 @@ class Pipeline:
                             tagger_test_set.conllu_doc[sentid][wordid][HEAD] = int(pred_tokens[bid][i][0])
                             tagger_test_set.conllu_doc[sentid][wordid][DEPREL] = pred_tokens[bid][i][1]
 
-                    del predictions
-                    del sentlens
-                    del head_seqs
-                    del deprel_seqs
-                    del pred_tokens
-
                 tagged_doc = get_output_doc(in_doc, tagger_test_set.conllu_doc)
                 out = self._lemmatize_doc(tagged_doc, skip_dict_seq2seq=skip_dict_seq2seq)
 
@@ -1498,8 +1421,6 @@ class Pipeline:
                                 for i in range(batch.word_num[bid]):
                                     wordid = batch.word_ids[bid][i]
                                     dner_doc[sentid][TOKENS][wordid][NER] = pred_entity_labels[bid][i]
-
-                            del pred_entity_labels
 
                         out = dner_doc
 

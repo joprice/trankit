@@ -208,11 +208,13 @@ def charlevel_format_to_wordpiece_format(wordpiece_splitter, max_input_length, p
         with open(char_labels_output_fpath) as f:
             corpus_labels = ''.join(f.readlines()).rstrip()
     else:
-        corpus_labels = '\n\n'.join(['0' * len(pt.rstrip()) for pt in NEWLINE_WHITESPACE_RE.split(plaintext)])
+        corpus_labels = '\n\n'.join('0' * len(pt.rstrip()) for pt in NEWLINE_WHITESPACE_RE.split(plaintext))
 
-    data = [{'text': pt.rstrip(), 'charlabels': pc} for pt, pc in
-            zip(NEWLINE_WHITESPACE_RE.split(plaintext), NEWLINE_WHITESPACE_RE.split(corpus_labels)) if
-            len(pt.rstrip()) > 0]
+    data = [
+        {'text': s, 'charlabels': pc}
+        for pt, pc in zip(NEWLINE_WHITESPACE_RE.split(plaintext), NEWLINE_WHITESPACE_RE.split(corpus_labels))
+        if (s := pt.rstrip())
+    ]
 
     wordpiece_examples = []
     kept_tokens = 0
@@ -229,8 +231,8 @@ def charlevel_format_to_wordpiece_format(wordpiece_splitter, max_input_length, p
                 wordpiece_splitter, sent_text,
                 sent_labels, sent_start,
                 treebank_name)
-            kept_tokens += len([x for x in wordpiece_labels if x != 0])
-            total_tokens += len([x for x in sent_labels if x != '0'])
+            kept_tokens += sum(1 for x in wordpiece_labels if x != 0)
+            total_tokens += sum(1 for x in sent_labels if x != '0')
             if len(wordpieces) <= max_input_length - 2:  # minus 2: reserved for <s> and </s>
                 tmp_examples.append((wordpieces, wordpiece_labels, wordpiece_ends, end_piece_ids))
             else:
