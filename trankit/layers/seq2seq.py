@@ -244,22 +244,23 @@ class Beam:
      Takes care of beams, back pointers, and scores.
     """
 
-    def __init__(self, size, cuda=False):
+    def __init__(self, size, device=None):
 
         self.size = size
         self.done = False
-
-        self.tt = torch.cuda if cuda else torch
+        if device is None:
+            device = torch.device('cpu')
+        self.device = device
 
         # The score for each translation on the beam.
-        self.scores = self.tt.FloatTensor(size).zero_()
+        self.scores = torch.zeros(size, device=device)
         self.allScores = []
 
         # The backpointers at each time-step.
         self.prevKs = []
 
         # The outputs at each time-step.
-        self.nextYs = [self.tt.LongTensor(size).fill_(PAD_ID)]
+        self.nextYs = [torch.full((size,), PAD_ID, dtype=torch.long, device=device)]
         self.nextYs[0][0] = SOS_ID
 
         # The copy indices for each time
@@ -360,7 +361,7 @@ class Seq2SeqModel(nn.Module):
     A complete encoder-decoder model, with optional attention.
     """
 
-    def __init__(self, args, emb_matrix=None, use_cuda=False, training_mode=False):
+    def __init__(self, args, emb_matrix=None, use_cuda=False, training_mode=False, device=None):
         super().__init__()
         self.vocab_size = args['vocab_size']
         self.emb_dim = args['emb_dim']
@@ -370,7 +371,14 @@ class Seq2SeqModel(nn.Module):
         self.dropout = args['dropout']
         self.pad_token = PAD_ID
         self.max_dec_len = args['max_dec_len']
-        self.use_cuda = use_cuda
+        # Support both legacy use_cuda bool and explicit device
+        if device is not None:
+            self.device = device
+        elif use_cuda:
+            self.device = torch.device('cuda')
+        else:
+            self.device = torch.device('cpu')
+        self.use_cuda = self.device.type != 'cpu'
         self.training_mode = training_mode
         self.top = args.get('top', 1e10)
         self.args = args
@@ -405,8 +413,7 @@ class Seq2SeqModel(nn.Module):
                 nn.ReLU(),
                 nn.Linear(edit_hidden, self.num_edit))
 
-        self.SOS_tensor = torch.LongTensor([SOS_ID])
-        self.SOS_tensor = self.SOS_tensor.cuda() if self.use_cuda else self.SOS_tensor
+        self.SOS_tensor = torch.tensor([SOS_ID], dtype=torch.long, device=self.device)
 
         self.init_weights()
 
@@ -428,21 +435,34 @@ class Seq2SeqModel(nn.Module):
 
     def cuda(self):
         super().cuda()
+        self.device = torch.device('cuda')
         self.use_cuda = True
 
     def cpu(self):
         super().cpu()
+        self.device = torch.device('cpu')
         self.use_cuda = False
+
+    def to(self, device, *args, **kwargs):
+        super().to(device, *args, **kwargs)
+        if isinstance(device, torch.device):
+            self.device = device
+            self.use_cuda = device.type != 'cpu'
+        elif isinstance(device, str):
+            self.device = torch.device(device)
+            self.use_cuda = self.device.type != 'cpu'
+        self.SOS_tensor = self.SOS_tensor.to(self.device)
+        return self
 
     def zero_state(self, inputs):
         batch_size = inputs.size(0)
-        h0 = torch.zeros(self.encoder.num_layers * 2, batch_size, self.enc_hidden_dim, requires_grad=False)
-        c0 = torch.zeros(self.encoder.num_layers * 2, batch_size, self.enc_hidden_dim, requires_grad=False)
-        if self.use_cuda:
-            if self.training_mode:
-                return h0.cuda(), c0.cuda()
-            else:
-                return h0.cuda().half(), c0.cuda().half()
+        h0 = torch.zeros(self.encoder.num_layers * 2, batch_size, self.enc_hidden_dim,
+                          requires_grad=False, device=self.device)
+        c0 = torch.zeros(self.encoder.num_layers * 2, batch_size, self.enc_hidden_dim,
+                          requires_grad=False, device=self.device)
+        if self.use_cuda and not self.training_mode:
+            h0 = h0.half()
+            c0 = c0.half()
         return h0, c0
 
     def encode(self, enc_inputs, lens):
@@ -572,7 +592,7 @@ class Seq2SeqModel(nn.Module):
             # repeat decoder hidden states
             hn = hn.data.repeat(beam_size, 1)
             cn = cn.data.repeat(beam_size, 1)
-        beam = [Beam(beam_size, self.use_cuda) for _ in range(batch_size)]
+        beam = [Beam(beam_size, device=self.device) for _ in range(batch_size)]
 
         def update_state(states, idx, positions, beam_size):
             """ Select the states according to back pointers. """

@@ -151,6 +151,11 @@ class Pipeline:
             self.master_config.device = torch.device('cuda')
             self._tokbatchsize = 6
             self._tagbatchsize = 24
+        elif self._gpu and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            self._use_gpu = True
+            self.master_config.device = torch.device('mps')
+            self._tokbatchsize = 6
+            self._tagbatchsize = 24
         else:
             self._use_gpu = False
             self.master_config.device = torch.device('cpu')

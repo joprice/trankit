@@ -90,22 +90,16 @@ def edit_word(word, pred, edit_id):
         raise Exception("Unrecognized edit ID: {}".format(edit_id))
 
 
-def unpack_mwt_batch(batch, use_cuda):
+def unpack_mwt_batch(batch, device):
     """ Unpack a batch from the data loader. """
-    if use_cuda:
-        inputs = [b.cuda() if b is not None else None for b in batch[:4]]
-    else:
-        inputs = [b if b is not None else None for b in batch[:4]]
+    inputs = [b.to(device) if b is not None else None for b in batch[:4]]
     orig_idx = batch[4]
     return inputs, orig_idx
 
 
-def unpack_lemma_batch(batch, use_cuda):
+def unpack_lemma_batch(batch, device):
     """ Unpack a batch from the data loader. """
-    if use_cuda:
-        inputs = [b.cuda() if b is not None else None for b in batch[:6]]
-    else:
-        inputs = [b if b is not None else None for b in batch[:6]]
+    inputs = [b.to(device) if b is not None else None for b in batch[:6]]
     orig_idx = batch[6]
     return inputs, orig_idx
 
@@ -273,8 +267,10 @@ def flatten_indices(seq_lens, width):
     return flat
 
 
-def set_cuda(var, cuda):
-    if cuda:
+def set_cuda(var, device):
+    if isinstance(device, torch.device):
+        return var.to(device)
+    if device:
         return var.cuda()
     return var
 

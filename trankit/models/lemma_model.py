@@ -60,16 +60,23 @@ def set_lemma(doc, preds, obmit_tag=None, training_mode=False):
 class Trainer:
     """ A trainer for training models. """
 
-    def __init__(self, args=None, vocab=None, emb_matrix=None, model_file=None, use_cuda=False, training_mode=False):
-        self.use_cuda = use_cuda
+    def __init__(self, args=None, vocab=None, emb_matrix=None, model_file=None, use_cuda=False, training_mode=False, device=None):
+        # Support both legacy use_cuda bool and explicit device
+        if device is not None:
+            self.device = device
+        elif use_cuda:
+            self.device = torch.device('cuda')
+        else:
+            self.device = torch.device('cpu')
+        self.use_cuda = self.device.type != 'cpu'
         self.training_mode = training_mode
         if model_file is not None:
             # load everything from file
-            self.load(model_file, use_cuda)
+            self.load(model_file, device=self.device)
         else:
             # build model from scratch
             self.args = args
-            self.model = None if args['dict_only'] else Seq2SeqModel(args, emb_matrix=emb_matrix, use_cuda=use_cuda,
+            self.model = None if args['dict_only'] else Seq2SeqModel(args, emb_matrix=emb_matrix, device=self.device,
                                                                      training_mode=training_mode)
             self.vocab = vocab
             # dict-based components
@@ -81,16 +88,12 @@ class Trainer:
             else:
                 self.crit = SequenceLoss(self.vocab['char'].size)
             self.parameters = [p for p in self.model.parameters() if p.requires_grad]
-            if use_cuda:
-                self.model.cuda()
-                self.crit.cuda()
-            else:
-                self.model.cpu()
-                self.crit.cpu()
+            self.model.to(self.device)
+            self.crit.to(self.device)
             self.optimizer = get_optimizer(self.args['optim'], self.parameters, self.args['lr'])
 
     def update(self, batch, eval=False):
-        inputs, orig_idx = unpack_lemma_batch(batch, self.use_cuda)
+        inputs, orig_idx = unpack_lemma_batch(batch, self.device)
         src, src_mask, tgt_in, tgt_out, pos, edits = inputs
 
         if eval:
@@ -115,7 +118,7 @@ class Trainer:
         return loss_val
 
     def predict(self, batch, beam_size=1):
-        inputs, orig_idx = unpack_lemma_batch(batch, self.use_cuda)
+        inputs, orig_idx = unpack_lemma_batch(batch, self.device)
         src, src_mask, tgt, tgt_mask, pos, edits = inputs
 
         self.model.eval()
@@ -226,7 +229,7 @@ class Trainer:
         except BaseException:
             raise
 
-    def load(self, filename, use_cuda=False):
+    def load(self, filename, use_cuda=False, device=None):
         try:
             checkpoint = torch.load(filename, lambda storage, loc: storage)
         except BaseException:
@@ -234,7 +237,8 @@ class Trainer:
         self.args = checkpoint['config']
         self.word_dict, self.composite_dict = checkpoint['dicts']
         if not self.args['dict_only']:
-            self.model = Seq2SeqModel(self.args, use_cuda=use_cuda)
+            self.model = Seq2SeqModel(self.args, device=device if device is not None else
+                                      (torch.device('cuda') if use_cuda else torch.device('cpu')))
             self.model.load_state_dict(checkpoint['model'])
         else:
             self.model = None
@@ -296,14 +300,14 @@ def get_args():
     return args
 
 
-def get_lemma_model(cache_dir, language, use_gpu):
+def get_lemma_model(cache_dir, language, use_gpu, device=None):
     args = get_args()
     # load model
     model_file = os.path.join(cache_dir, '{}/{}_lemmatizer.pt'.format(language, language))
     args['data_dir'] = os.path.join(cache_dir, language)
     args['model_dir'] = os.path.join(cache_dir, language)
-    trainer = Trainer(model_file=model_file, use_cuda=use_gpu)
-    if use_gpu:
+    trainer = Trainer(model_file=model_file, device=device, use_cuda=use_gpu)
+    if trainer.use_cuda:
         trainer.model.half()
     loaded_args, vocab = trainer.args, trainer.vocab
 
@@ -325,7 +329,8 @@ class LemmaWrapper:
             else:
                 self.model, self.args, self.loaded_args, self.vocab = get_lemma_model(os.path.join(self.config._cache_dir, self.config.embedding_name),
                                                                                       treebank2lang[treebank_name],
-                                                                                      use_gpu)
+                                                                                      use_gpu,
+                                                                                      device=config.device)
             print('Loading lemmatizer for {}'.format(treebank2lang[treebank_name]))
         else:
             self.get_lemma_trainer(treebank2lang[treebank_name], use_gpu)

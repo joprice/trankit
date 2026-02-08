@@ -160,14 +160,15 @@ class NERDatasetLive(Dataset):
         batch_words = [inst.words for inst in batch]
         batch_word_num = [inst.word_num for inst in batch]
 
-        batch_piece_idxs = []
-        batch_attention_masks = []
         batch_word_lens = []
 
         max_word_num = max(batch_word_num)
-        max_wordpiece_num = max([len(inst.piece_idxs) for inst in batch])
         batch_word_mask = []
         batch_entity_label_idxs = []
+
+        batch_piece_idxs = []
+        batch_attention_masks = []
+        max_wordpiece_num = max(len(inst.piece_idxs) for inst in batch)
 
         for inst in batch:
             batch_piece_idxs.append(inst.piece_idxs + [0] * (max_wordpiece_num - len(inst.piece_idxs)))
@@ -177,8 +178,9 @@ class NERDatasetLive(Dataset):
             batch_entity_label_idxs.append(inst.entity_label_idxs +
                                            [0] * (max_word_num - inst.word_num))
 
-        batch_piece_idxs = torch.tensor(batch_piece_idxs, dtype=torch.long, device=self.config.device)
-        batch_attention_masks = torch.tensor(batch_attention_masks, dtype=torch.float, device=self.config.device)
+        device = self.config.device
+        batch_piece_idxs = torch.tensor(batch_piece_idxs, dtype=torch.long, device=device)
+        batch_attention_masks = torch.tensor(batch_attention_masks, dtype=torch.float, device=device)
         batch_word_num = torch.tensor(batch_word_num, dtype=torch.long, device=self.config.device)
         batch_word_mask = torch.tensor(batch_word_mask, dtype=torch.long, device=self.config.device).eq(0)
         batch_entity_label_idxs = torch.tensor(batch_entity_label_idxs, dtype=torch.long, device=self.config.device)

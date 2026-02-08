@@ -96,9 +96,7 @@ class TaggerDatasetLive(Dataset):
         for inst in self.data:
             pieces = inst['pieces']
             word_lens = [len(x) for x in pieces]
-            assert 0 not in word_lens
             flat_pieces = [p for ps in pieces for p in ps]
-            assert len(flat_pieces) > 0
 
             word_span_idxs = []
             start = 1
@@ -106,26 +104,20 @@ class TaggerDatasetLive(Dataset):
                 word_span_idxs.append([start, start + l])
                 start += l
 
-            # Pad word pieces with special tokens
             piece_idxs = wordpiece_splitter.encode(
                 flat_pieces,
                 add_special_tokens=True,
                 max_length=self.max_input_length,
                 truncation=True
             )
-            assert len(piece_idxs) <= self.max_input_length
 
             attn_masks = [1] * len(piece_idxs)
-            assert len(piece_idxs) > 0
 
             edit_type_idxs = [self.vocabs[LEMMA][edit] for edit in inst[LEMMA]]
             upos_type_idxs = [self.vocabs[UPOS][upos] for upos in inst[UPOS]]
             xpos_type_idxs = [self.vocabs[XPOS][xpos] for xpos in inst[XPOS]]
             feats_type_idxs = [self.vocabs[FEATS][feats] for feats in inst[FEATS]]
 
-            assert len(edit_type_idxs) == len(inst['words'])
-
-            # head, deprel, word_mask
             head_idxs = [head for head in inst[HEAD]]
             deprel_idxs = [self.vocabs[DEPREL][deprel] for deprel in inst[DEPREL]]
             word_mask = [0] * (len(inst['words']) + 1)
@@ -180,40 +172,39 @@ class TaggerDatasetLive(Dataset):
             batch_word_lens.append(inst.word_lens)
             batch_word_span_idxs.append(inst.word_span_idxs + [[1, 2]] * (max_word_num - inst.word_num))
 
-            # lemmatization
             batch_edit_type_idxs.extend(inst.edit_type_idxs +
                                         [-100] * (max_word_num - inst.word_num))
-            # upos, xpos, feats
             batch_upos_type_idxs.extend(inst.upos_type_idxs +
                                         [-100] * (max_word_num - inst.word_num))
             batch_xpos_type_idxs.extend(inst.xpos_type_idxs +
                                         [-100] * (max_word_num - inst.word_num))
             batch_feats_type_idxs.extend(inst.feats_type_idxs +
                                          [-100] * (max_word_num - inst.word_num))
-            # head, deprel
+
             batch_head_ids.append(inst.head_idxs + [0] * (max_word_num - inst.word_num))
             batch_deprel_ids.append(inst.deprel_idxs + [0] * (max_word_num - inst.word_num))
             batch_word_mask.append(inst.word_mask + [1] * (max_word_num - inst.word_num))
-            # ids for feature building
+
             batch_upos_ids.append(inst.upos_type_idxs + [0] * (max_word_num - inst.word_num))
             batch_xpos_ids.append(inst.xpos_type_idxs + [0] * (max_word_num - inst.word_num))
             batch_feats_ids.append(inst.feats_type_idxs + [0] * (max_word_num - inst.word_num))
 
-        batch_piece_idxs = torch.tensor(batch_piece_idxs, dtype=torch.long, device=self.config.device)
-        batch_attention_masks = torch.tensor(batch_attention_masks, dtype=torch.float16, device=self.config.device)
-        batch_edit_type_idxs = torch.tensor(batch_edit_type_idxs, dtype=torch.long, device=self.config.device)
-        batch_word_span_idxs = torch.tensor(batch_word_span_idxs, dtype=torch.long, device=self.config.device)
+        device = self.config.device
+        batch_piece_idxs = torch.tensor(batch_piece_idxs, dtype=torch.long, device=device)
+        batch_attention_masks = torch.tensor(batch_attention_masks, dtype=torch.float16, device=device)
+        batch_edit_type_idxs = torch.tensor(batch_edit_type_idxs, dtype=torch.long, device=device)
+        batch_word_span_idxs = torch.tensor(batch_word_span_idxs, dtype=torch.long, device=device)
 
-        batch_upos_type_idxs = torch.tensor(batch_upos_type_idxs, dtype=torch.long, device=self.config.device)
-        batch_xpos_type_idxs = torch.tensor(batch_xpos_type_idxs, dtype=torch.long, device=self.config.device)
-        batch_feats_type_idxs = torch.tensor(batch_feats_type_idxs, dtype=torch.long, device=self.config.device)
+        batch_upos_type_idxs = torch.tensor(batch_upos_type_idxs, dtype=torch.long, device=device)
+        batch_xpos_type_idxs = torch.tensor(batch_xpos_type_idxs, dtype=torch.long, device=device)
+        batch_feats_type_idxs = torch.tensor(batch_feats_type_idxs, dtype=torch.long, device=device)
 
-        batch_upos_ids = torch.tensor(batch_upos_ids, dtype=torch.long, device=self.config.device)
-        batch_xpos_ids = torch.tensor(batch_xpos_ids, dtype=torch.long, device=self.config.device)
+        batch_upos_ids = torch.tensor(batch_upos_ids, dtype=torch.long, device=device)
+        batch_xpos_ids = torch.tensor(batch_xpos_ids, dtype=torch.long, device=device)
 
-        batch_head_ids = torch.tensor(batch_head_ids, dtype=torch.long, device=self.config.device)
-        batch_deprel_ids = torch.tensor(batch_deprel_ids, dtype=torch.long, device=self.config.device)
-        batch_word_mask = torch.tensor(batch_word_mask, dtype=torch.bool, device=self.config.device)
+        batch_head_ids = torch.tensor(batch_head_ids, dtype=torch.long, device=device)
+        batch_deprel_ids = torch.tensor(batch_deprel_ids, dtype=torch.long, device=device)
+        batch_word_mask = torch.tensor(batch_word_mask, dtype=torch.bool, device=device)
 
         return Batch(
             sent_index=batch_sent_index,

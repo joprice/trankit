@@ -58,7 +58,7 @@ def count_sentences(result):
 
 def benchmark_task(fn, text, label, runs=BENCHMARK_RUNS, warmup=WARMUP_RUNS):
     """Benchmark a single task function, returning timing stats and throughput."""
-    with torch.no_grad():
+    with torch.inference_mode():
         # Warmup
         for _ in range(warmup):
             result = fn(text)
