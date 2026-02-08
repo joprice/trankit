@@ -373,7 +373,7 @@ class Seq2SeqModel(nn.Module):
         self.max_dec_len = args['max_dec_len']
         # Support both legacy use_cuda bool and explicit device
         if device is not None:
-            self.device = device
+            self.device = torch.device(device) if isinstance(device, str) else device
         elif use_cuda:
             self.device = torch.device('cuda')
         else:
@@ -460,7 +460,7 @@ class Seq2SeqModel(nn.Module):
                           requires_grad=False, device=self.device)
         c0 = torch.zeros(self.encoder.num_layers * 2, batch_size, self.enc_hidden_dim,
                           requires_grad=False, device=self.device)
-        if self.use_cuda and not self.training_mode:
+        if self.device.type == 'cuda' and not self.training_mode:
             h0 = h0.half()
             c0 = c0.half()
         return h0, c0

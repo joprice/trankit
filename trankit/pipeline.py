@@ -85,7 +85,7 @@ class Pipeline:
         print('Loading pretrained XLM-Roberta, this may take a while...')
         self._embedding_layers = Multilingual_Embedding(self._config)
         self._embedding_layers.to(self._config.device)
-        if self._use_gpu:
+        if self._use_half:
             self._embedding_layers.half()
         self._embedding_layers.eval()
         # for loading & auto-converting adapter weights
@@ -95,7 +95,7 @@ class Pipeline:
         self._tokenizer = {}
         self._tokenizer[lang] = TokenizerClassifier(self._config, treebank_name=lang2treebank[lang])
         self._tokenizer[lang].to(self._config.device)
-        if self._use_gpu:
+        if self._use_half:
             self._tokenizer[lang].half()
         self._tokenizer[lang].eval()
 
@@ -103,7 +103,7 @@ class Pipeline:
         self._tagger = {}
         self._tagger[lang] = PosDepClassifier(self._config, treebank_name=lang2treebank[lang])
         self._tagger[lang].to(self._config.device)
-        if self._use_gpu:
+        if self._use_half:
             self._tagger[lang].half()
         self._tagger[lang].eval()
 
@@ -122,7 +122,7 @@ class Pipeline:
         if lang in langwithner:
             self._ner_model[lang] = NERClassifier(self._config, lang)
             self._ner_model[lang].to(self._config.device)
-            if self._use_gpu:
+            if self._use_half:
                 self._ner_model[lang].half()
             self._ner_model[lang].eval()
 
@@ -148,16 +148,19 @@ class Pipeline:
         # decide whether to run on GPU or CPU
         if self._gpu and torch.cuda.is_available():
             self._use_gpu = True
+            self._use_half = True
             self.master_config.device = torch.device('cuda')
             self._tokbatchsize = 6
             self._tagbatchsize = 24
         elif self._gpu and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
             self._use_gpu = True
+            self._use_half = False
             self.master_config.device = torch.device('mps')
             self._tokbatchsize = 6
             self._tagbatchsize = 24
         else:
             self._use_gpu = False
+            self._use_half = False
             self.master_config.device = torch.device('cpu')
             self._tokbatchsize = 2
             self._tagbatchsize = 12
@@ -284,14 +287,14 @@ class Pipeline:
         # add tokenizer
         self._tokenizer[lang] = TokenizerClassifier(self._config, treebank_name=lang2treebank[lang])
         self._tokenizer[lang].to(self._config.device)
-        if self._use_gpu:
+        if self._use_half:
             self._tokenizer[lang].half()
         self._tokenizer[lang].eval()
 
         # add tagger
         self._tagger[lang] = PosDepClassifier(self._config, treebank_name=lang2treebank[lang])
         self._tagger[lang].to(self._config.device)
-        if self._use_gpu:
+        if self._use_half:
             self._tagger[lang].half()
         self._tagger[lang].eval()
 
@@ -307,7 +310,7 @@ class Pipeline:
         if lang in langwithner:
             self._ner_model[lang] = NERClassifier(self._config, lang)
             self._ner_model[lang].to(self._config.device)
-            if self._use_gpu:
+            if self._use_half:
                 self._ner_model[lang].half()
             self._ner_model[lang].eval()
 

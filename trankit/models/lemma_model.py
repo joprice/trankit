@@ -63,7 +63,7 @@ class Trainer:
     def __init__(self, args=None, vocab=None, emb_matrix=None, model_file=None, use_cuda=False, training_mode=False, device=None):
         # Support both legacy use_cuda bool and explicit device
         if device is not None:
-            self.device = device
+            self.device = torch.device(device) if isinstance(device, str) else device
         elif use_cuda:
             self.device = torch.device('cuda')
         else:
@@ -307,7 +307,7 @@ def get_lemma_model(cache_dir, language, use_gpu, device=None):
     args['data_dir'] = os.path.join(cache_dir, language)
     args['model_dir'] = os.path.join(cache_dir, language)
     trainer = Trainer(model_file=model_file, device=device, use_cuda=use_gpu)
-    if trainer.use_cuda:
+    if trainer.device.type == 'cuda':
         trainer.model.half()
     loaded_args, vocab = trainer.args, trainer.vocab
 

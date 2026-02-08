@@ -120,7 +120,8 @@ def run_benchmarks(embedding):
     t0 = time.perf_counter()
     p = trankit.Pipeline("english", embedding=embedding)
     init_time = time.perf_counter() - t0
-    print(f"Pipeline initialized in {init_time:.2f}s\n")
+    device_type = str(p._config.device.type)
+    print(f"Pipeline initialized in {init_time:.2f}s (device: {device_type})\n")
 
     results = []
 
@@ -157,11 +158,12 @@ def run_benchmarks(embedding):
 
     # Write JSON results for programmatic comparison
     out_dir = os.path.dirname(os.path.abspath(__file__))
-    out_path = os.path.join(out_dir, f"benchmark_results_{embedding}.json")
+    out_path = os.path.join(out_dir, f"benchmark_results_{embedding}_{device_type}.json")
     with open(out_path, "w") as f:
         json.dump(
             {
                 "embedding": embedding,
+                "device": device_type,
                 "warmup_runs": WARMUP_RUNS,
                 "benchmark_runs": BENCHMARK_RUNS,
                 "init_time_sec": round(init_time, 2),

@@ -92,7 +92,7 @@ class CRFLoss(nn.Module):
             new_alphas = rest_inputs[:, i, :] + log_sum_exp(transition_scores, dim=1)
             m = rest_masks[:, i].unsqueeze(1).expand_as(new_alphas)  # bs x nc, 1 for padding idx
             # apply masks
-            new_alphas.masked_scatter_(m, alphas.masked_select(m))
+            new_alphas = torch.where(m, alphas, new_alphas)
             alphas = new_alphas
         log_norm = log_sum_exp(alphas, dim=1)
         return log_norm
