@@ -14,6 +14,7 @@ from .utils.tbinfo import tbname2training_id, lang2treebank
 from .utils.chuliu_edmonds import *
 from adapters.loading import AdapterLoader
 from adapters import AdapterConfig, Stack
+from contextlib import nullcontext
 from datetime import datetime
 import langid
 import re
@@ -85,7 +86,7 @@ def is_list_list_strings(input):
 
 class Pipeline:
     def __init__(self, lang, cache_dir=None, gpu=True, embedding='xlm-roberta-base',
-                 cpu_lemma=None, cache_adapters=False):
+                 cpu_lemma=None, fp16=None, cache_adapters=False):
         super(Pipeline, self).__init__()
         # auto detection of lang
         if lang == 'auto':
@@ -111,6 +112,17 @@ class Pipeline:
             self._cpu_lemma = (self._config.device.type == 'mps')
         else:
             self._cpu_lemma = cpu_lemma
+        # FP16 autocast: auto-enable on CUDA unless explicitly set
+        if fp16 is None:
+            self._fp16 = (self._config.device.type == 'cuda')
+        else:
+            self._fp16 = fp16
+        device_type = self._config.device.type
+        if self._fp16 and device_type in ('cuda', 'cpu'):
+            self._autocast = lambda: torch.autocast(device_type, dtype=torch.float16)
+        else:
+            self._autocast = nullcontext
+
         self.added_langs = [lang]
         assert lang in lang2treebank, f'{lang} has not been supported. Currently supported languages: {list(lang2treebank.keys())}'
 
@@ -621,21 +633,22 @@ class Pipeline:
 
         # make predictions
         wordpiece_pred_labels, wordpiece_ends, paragraph_indexes = [], [], []
-        for batch in DataLoader(test_set, batch_size=eval_batch_size,
-                                shuffle=False, collate_fn=test_set.collate_fn,
-                                pin_memory=self._pin_memory):
-            batch = batch_to_device(batch, self._config.device, non_blocking=self._non_blocking)
-            wordpiece_reprs = self._embedding_layers.get_tokenizer_inputs(batch)
-            predictions = self._tokenizer[self._config.active_lang].predict(batch, wordpiece_reprs)
-            wp_pred_labels, wp_ends, para_ids = predictions[0], predictions[1], predictions[2]
-            wp_pred_labels = wp_pred_labels.detach().cpu().tolist()
+        with self._autocast():
+            for batch in DataLoader(test_set, batch_size=eval_batch_size,
+                                    shuffle=False, collate_fn=test_set.collate_fn,
+                                    pin_memory=self._pin_memory):
+                batch = batch_to_device(batch, self._config.device, non_blocking=self._non_blocking)
+                wordpiece_reprs = self._embedding_layers.get_tokenizer_inputs(batch)
+                predictions = self._tokenizer[self._config.active_lang].predict(batch, wordpiece_reprs)
+                wp_pred_labels, wp_ends, para_ids = predictions[0], predictions[1], predictions[2]
+                wp_pred_labels = wp_pred_labels.detach().cpu().tolist()
 
-            wordpiece_pred_labels.extend(
-                wp_labels[:len(wp_end_positions)] for wp_labels, wp_end_positions in zip(wp_pred_labels, wp_ends)
-            )
+                wordpiece_pred_labels.extend(
+                    wp_labels[:len(wp_end_positions)] for wp_labels, wp_end_positions in zip(wp_pred_labels, wp_ends)
+                )
 
-            wordpiece_ends.extend(wp_ends)
-            paragraph_indexes.extend(para_ids)
+                wordpiece_ends.extend(wp_ends)
+                paragraph_indexes.extend(para_ids)
         # mapping
         para_id_to_wp_pred_labels = defaultdict(list)
 
@@ -727,21 +740,22 @@ class Pipeline:
 
         # make predictions
         wordpiece_pred_labels, wordpiece_ends, paragraph_indexes = [], [], []
-        for batch in DataLoader(test_set, batch_size=eval_batch_size,
-                                shuffle=False, collate_fn=test_set.collate_fn,
-                                pin_memory=self._pin_memory):
-            batch = batch_to_device(batch, self._config.device, non_blocking=self._non_blocking)
-            wordpiece_reprs = self._embedding_layers.get_tokenizer_inputs(batch)
-            predictions = self._tokenizer[self._config.active_lang].predict(batch, wordpiece_reprs)
-            wp_pred_labels, wp_ends, para_ids = predictions[0], predictions[1], predictions[2]
-            wp_pred_labels = wp_pred_labels.detach().cpu().tolist()
+        with self._autocast():
+            for batch in DataLoader(test_set, batch_size=eval_batch_size,
+                                    shuffle=False, collate_fn=test_set.collate_fn,
+                                    pin_memory=self._pin_memory):
+                batch = batch_to_device(batch, self._config.device, non_blocking=self._non_blocking)
+                wordpiece_reprs = self._embedding_layers.get_tokenizer_inputs(batch)
+                predictions = self._tokenizer[self._config.active_lang].predict(batch, wordpiece_reprs)
+                wp_pred_labels, wp_ends, para_ids = predictions[0], predictions[1], predictions[2]
+                wp_pred_labels = wp_pred_labels.detach().cpu().tolist()
 
-            wordpiece_pred_labels.extend(
-                wp_labels[:len(wp_end_positions)] for wp_labels, wp_end_positions in zip(wp_pred_labels, wp_ends)
-            )
+                wordpiece_pred_labels.extend(
+                    wp_labels[:len(wp_end_positions)] for wp_labels, wp_end_positions in zip(wp_pred_labels, wp_ends)
+                )
 
-            wordpiece_ends.extend(wp_ends)
-            paragraph_indexes.extend(para_ids)
+                wordpiece_ends.extend(wp_ends)
+                paragraph_indexes.extend(para_ids)
         # mapping
         para_id_to_wp_pred_labels = defaultdict(list)
 
@@ -888,51 +902,52 @@ class Pipeline:
             eval_batch_size = int(eval_batch_size / 3)
 
         itos = self._config.itos[self._config.active_lang]
-        for batch in DataLoader(test_set,
-                                batch_size=eval_batch_size,
-                                shuffle=False, collate_fn=test_set.collate_fn,
-                                pin_memory=self._pin_memory):
-            batch = batch_to_device(batch, self._config.device, non_blocking=self._non_blocking)
-            batch_size = len(batch.word_num)
+        with self._autocast():
+            for batch in DataLoader(test_set,
+                                    batch_size=eval_batch_size,
+                                    shuffle=False, collate_fn=test_set.collate_fn,
+                                    pin_memory=self._pin_memory):
+                batch = batch_to_device(batch, self._config.device, non_blocking=self._non_blocking)
+                batch_size = len(batch.word_num)
 
-            word_reprs, cls_reprs = self._embedding_layers.get_tagger_inputs(batch)
-            predictions = self._tagger[self._config.active_lang].predict(batch, word_reprs, cls_reprs)
-            # stack upos/xpos/feats on GPU, one .cpu() transfer, unpack on CPU
-            tag_stacked = torch.stack([predictions[0], predictions[1], predictions[2]]).detach().cpu().tolist()
-            predicted_upos, predicted_xpos, predicted_feats = tag_stacked
+                word_reprs, cls_reprs = self._embedding_layers.get_tagger_inputs(batch)
+                predictions = self._tagger[self._config.active_lang].predict(batch, word_reprs, cls_reprs)
+                # stack upos/xpos/feats on GPU, one .cpu() transfer, unpack on CPU
+                tag_stacked = torch.stack([predictions[0], predictions[1], predictions[2]]).detach().cpu().tolist()
+                predicted_upos, predicted_xpos, predicted_feats = tag_stacked
 
-            # head, deprel — different dtypes, transfer back-to-back
-            predicted_dep = predictions[3]
-            dep_unlabeled = predicted_dep[0].cpu().numpy()
-            dep_labeled = predicted_dep[1].cpu().numpy()
-            sentlens = [l + 1 for l in batch.word_num]
-            head_seqs = [chuliu_edmonds_one_root(adj[:l, :l])[1:] for adj, l in
-                         zip(dep_unlabeled, sentlens)]  # remove attachment for the root
-            deprel_seqs = [
-                [itos[DEPREL][dep_labeled[i][j + 1][h]] for j, h in
-                 enumerate(hs)] for
-                i, hs
-                in
-                enumerate(head_seqs)]
+                # head, deprel — different dtypes, transfer back-to-back
+                predicted_dep = predictions[3]
+                dep_unlabeled = predicted_dep[0].cpu().numpy()
+                dep_labeled = predicted_dep[1].cpu().numpy()
+                sentlens = [l + 1 for l in batch.word_num]
+                head_seqs = [chuliu_edmonds_one_root(adj[:l, :l])[1:] for adj, l in
+                             zip(dep_unlabeled, sentlens)]  # remove attachment for the root
+                deprel_seqs = [
+                    [itos[DEPREL][dep_labeled[i][j + 1][h]] for j, h in
+                     enumerate(hs)] for
+                    i, hs
+                    in
+                    enumerate(head_seqs)]
 
-            pred_tokens = [[[head_seqs[i][j], deprel_seqs[i][j]] for j in range(sentlens[i] - 1)] for i in
-                           range(batch_size)]
+                pred_tokens = [[[head_seqs[i][j], deprel_seqs[i][j]] for j in range(sentlens[i] - 1)] for i in
+                               range(batch_size)]
 
-            for bid in range(batch_size):
-                sentid = batch.sent_index[bid]
-                for i in range(batch.word_num[bid]):
-                    wordid = batch.word_ids[bid][i]
+                for bid in range(batch_size):
+                    sentid = batch.sent_index[bid]
+                    for i in range(batch.word_num[bid]):
+                        wordid = batch.word_ids[bid][i]
 
-                    # upos
-                    test_set.conllu_doc[sentid][wordid][UPOS] = itos[UPOS][predicted_upos[bid][i]]
-                    # xpos
-                    test_set.conllu_doc[sentid][wordid][XPOS] = itos[XPOS][predicted_xpos[bid][i]]
-                    # feats
-                    test_set.conllu_doc[sentid][wordid][FEATS] = itos[FEATS][predicted_feats[bid][i]]
-                    # head
-                    test_set.conllu_doc[sentid][wordid][HEAD] = int(pred_tokens[bid][i][0])
-                    # deprel
-                    test_set.conllu_doc[sentid][wordid][DEPREL] = pred_tokens[bid][i][1]
+                        # upos
+                        test_set.conllu_doc[sentid][wordid][UPOS] = itos[UPOS][predicted_upos[bid][i]]
+                        # xpos
+                        test_set.conllu_doc[sentid][wordid][XPOS] = itos[XPOS][predicted_xpos[bid][i]]
+                        # feats
+                        test_set.conllu_doc[sentid][wordid][FEATS] = itos[FEATS][predicted_feats[bid][i]]
+                        # head
+                        test_set.conllu_doc[sentid][wordid][HEAD] = int(pred_tokens[bid][i][0])
+                        # deprel
+                        test_set.conllu_doc[sentid][wordid][DEPREL] = pred_tokens[bid][i][1]
 
         tagged_doc = get_output_doc(posdep_sent, test_set.conllu_doc)
 
@@ -959,51 +974,52 @@ class Pipeline:
             eval_batch_size = int(eval_batch_size / 3)
 
         itos = self._config.itos[self._config.active_lang]
-        for batch in DataLoader(test_set,
-                                batch_size=eval_batch_size,
-                                shuffle=False, collate_fn=test_set.collate_fn,
-                                pin_memory=self._pin_memory):
-            batch = batch_to_device(batch, self._config.device, non_blocking=self._non_blocking)
-            batch_size = len(batch.word_num)
+        with self._autocast():
+            for batch in DataLoader(test_set,
+                                    batch_size=eval_batch_size,
+                                    shuffle=False, collate_fn=test_set.collate_fn,
+                                    pin_memory=self._pin_memory):
+                batch = batch_to_device(batch, self._config.device, non_blocking=self._non_blocking)
+                batch_size = len(batch.word_num)
 
-            word_reprs, cls_reprs = self._embedding_layers.get_tagger_inputs(batch)
-            predictions = self._tagger[self._config.active_lang].predict(batch, word_reprs, cls_reprs)
-            # stack upos/xpos/feats on GPU, one .cpu() transfer, unpack on CPU
-            tag_stacked = torch.stack([predictions[0], predictions[1], predictions[2]]).detach().cpu().tolist()
-            predicted_upos, predicted_xpos, predicted_feats = tag_stacked
+                word_reprs, cls_reprs = self._embedding_layers.get_tagger_inputs(batch)
+                predictions = self._tagger[self._config.active_lang].predict(batch, word_reprs, cls_reprs)
+                # stack upos/xpos/feats on GPU, one .cpu() transfer, unpack on CPU
+                tag_stacked = torch.stack([predictions[0], predictions[1], predictions[2]]).detach().cpu().tolist()
+                predicted_upos, predicted_xpos, predicted_feats = tag_stacked
 
-            # head, deprel — different dtypes, transfer back-to-back
-            predicted_dep = predictions[3]
-            dep_unlabeled = predicted_dep[0].cpu().numpy()
-            dep_labeled = predicted_dep[1].cpu().numpy()
-            sentlens = [l + 1 for l in batch.word_num]
-            head_seqs = [chuliu_edmonds_one_root(adj[:l, :l])[1:] for adj, l in
-                         zip(dep_unlabeled, sentlens)]  # remove attachment for the root
-            deprel_seqs = [
-                [itos[DEPREL][dep_labeled[i][j + 1][h]] for j, h in
-                 enumerate(hs)] for
-                i, hs
-                in
-                enumerate(head_seqs)]
+                # head, deprel — different dtypes, transfer back-to-back
+                predicted_dep = predictions[3]
+                dep_unlabeled = predicted_dep[0].cpu().numpy()
+                dep_labeled = predicted_dep[1].cpu().numpy()
+                sentlens = [l + 1 for l in batch.word_num]
+                head_seqs = [chuliu_edmonds_one_root(adj[:l, :l])[1:] for adj, l in
+                             zip(dep_unlabeled, sentlens)]  # remove attachment for the root
+                deprel_seqs = [
+                    [itos[DEPREL][dep_labeled[i][j + 1][h]] for j, h in
+                     enumerate(hs)] for
+                    i, hs
+                    in
+                    enumerate(head_seqs)]
 
-            pred_tokens = [[[head_seqs[i][j], deprel_seqs[i][j]] for j in range(sentlens[i] - 1)] for i in
-                           range(batch_size)]
+                pred_tokens = [[[head_seqs[i][j], deprel_seqs[i][j]] for j in range(sentlens[i] - 1)] for i in
+                               range(batch_size)]
 
-            for bid in range(batch_size):
-                sentid = batch.sent_index[bid]
-                for i in range(batch.word_num[bid]):
-                    wordid = batch.word_ids[bid][i]
+                for bid in range(batch_size):
+                    sentid = batch.sent_index[bid]
+                    for i in range(batch.word_num[bid]):
+                        wordid = batch.word_ids[bid][i]
 
-                    # upos
-                    test_set.conllu_doc[sentid][wordid][UPOS] = itos[UPOS][predicted_upos[bid][i]]
-                    # xpos
-                    test_set.conllu_doc[sentid][wordid][XPOS] = itos[XPOS][predicted_xpos[bid][i]]
-                    # feats
-                    test_set.conllu_doc[sentid][wordid][FEATS] = itos[FEATS][predicted_feats[bid][i]]
-                    # head
-                    test_set.conllu_doc[sentid][wordid][HEAD] = int(pred_tokens[bid][i][0])
-                    # deprel
-                    test_set.conllu_doc[sentid][wordid][DEPREL] = pred_tokens[bid][i][1]
+                        # upos
+                        test_set.conllu_doc[sentid][wordid][UPOS] = itos[UPOS][predicted_upos[bid][i]]
+                        # xpos
+                        test_set.conllu_doc[sentid][wordid][XPOS] = itos[XPOS][predicted_xpos[bid][i]]
+                        # feats
+                        test_set.conllu_doc[sentid][wordid][FEATS] = itos[FEATS][predicted_feats[bid][i]]
+                        # head
+                        test_set.conllu_doc[sentid][wordid][HEAD] = int(pred_tokens[bid][i][0])
+                        # deprel
+                        test_set.conllu_doc[sentid][wordid][DEPREL] = pred_tokens[bid][i][1]
 
         tagged_doc = get_output_doc(in_doc, test_set.conllu_doc)
 
@@ -1141,24 +1157,25 @@ class Pipeline:
         if self._config.embedding_name == 'xlm-roberta-large':
             eval_batch_size = int(eval_batch_size / 3)
 
-        for batch in DataLoader(test_set,
-                                batch_size=eval_batch_size,
-                                shuffle=False, collate_fn=test_set.collate_fn,
-                                pin_memory=self._pin_memory):
-            batch = batch_to_device(batch, self._config.device, non_blocking=self._non_blocking)
-            word_reprs, cls_reprs = self._embedding_layers.get_tagger_inputs(batch)
-            pred_entity_labels = self._ner_model[self._config.active_lang].predict(batch, word_reprs)
+        with self._autocast():
+            for batch in DataLoader(test_set,
+                                    batch_size=eval_batch_size,
+                                    shuffle=False, collate_fn=test_set.collate_fn,
+                                    pin_memory=self._pin_memory):
+                batch = batch_to_device(batch, self._config.device, non_blocking=self._non_blocking)
+                word_reprs, cls_reprs = self._embedding_layers.get_tagger_inputs(batch)
+                pred_entity_labels = self._ner_model[self._config.active_lang].predict(batch, word_reprs)
 
-            batch_size = len(batch.word_num)
+                batch_size = len(batch.word_num)
 
-            for bid in range(batch_size):
-                sentid = batch.sent_index[bid]
-                for i in range(batch.word_num[bid]):
-                    wordid = batch.word_ids[bid][i]
+                for bid in range(batch_size):
+                    sentid = batch.sent_index[bid]
+                    for i in range(batch.word_num[bid]):
+                        wordid = batch.word_ids[bid][i]
 
-                    # NER tag
-                    dner_doc[sentid][TOKENS][wordid][NER] = pred_entity_labels[bid][i]
-            
+                        # NER tag
+                        dner_doc[sentid][TOKENS][wordid][NER] = pred_entity_labels[bid][i]
+
         return dner_doc[0][TOKENS]
 
     def _ner_doc(self, in_doc):  # assuming input is a document
@@ -1177,23 +1194,24 @@ class Pipeline:
         if self._config.embedding_name == 'xlm-roberta-large':
             eval_batch_size = int(eval_batch_size / 3)
 
-        for batch in DataLoader(test_set,
-                                batch_size=eval_batch_size,
-                                shuffle=False, collate_fn=test_set.collate_fn,
-                                pin_memory=self._pin_memory):
-            batch = batch_to_device(batch, self._config.device, non_blocking=self._non_blocking)
-            word_reprs, cls_reprs = self._embedding_layers.get_tagger_inputs(batch)
-            pred_entity_labels = self._ner_model[self._config.active_lang].predict(batch, word_reprs)
+        with self._autocast():
+            for batch in DataLoader(test_set,
+                                    batch_size=eval_batch_size,
+                                    shuffle=False, collate_fn=test_set.collate_fn,
+                                    pin_memory=self._pin_memory):
+                batch = batch_to_device(batch, self._config.device, non_blocking=self._non_blocking)
+                word_reprs, cls_reprs = self._embedding_layers.get_tagger_inputs(batch)
+                pred_entity_labels = self._ner_model[self._config.active_lang].predict(batch, word_reprs)
 
-            batch_size = len(batch.word_num)
+                batch_size = len(batch.word_num)
 
-            for bid in range(batch_size):
-                sentid = batch.sent_index[bid]
-                for i in range(batch.word_num[bid]):
-                    wordid = batch.word_ids[bid][i]
+                for bid in range(batch_size):
+                    sentid = batch.sent_index[bid]
+                    for i in range(batch.word_num[bid]):
+                        wordid = batch.word_ids[bid][i]
 
-                    # NER tag
-                    dner_doc[sentid][TOKENS][wordid][NER] = pred_entity_labels[bid][i]
+                        # NER tag
+                        dner_doc[sentid][TOKENS][wordid][NER] = pred_entity_labels[bid][i]
 
         return dner_doc
 
@@ -1247,41 +1265,42 @@ class Pipeline:
                     eval_batch_size = int(eval_batch_size / 3)
 
                 itos = self._config.itos[self._config.active_lang]
-                for batch in DataLoader(tagger_test_set,
-                                        batch_size=eval_batch_size,
-                                        shuffle=False, collate_fn=tagger_test_set.collate_fn,
-                                        pin_memory=self._pin_memory):
-                    batch = batch_to_device(batch, self._config.device, non_blocking=self._non_blocking)
-                    batch_size = len(batch.word_num)
+                with self._autocast():
+                    for batch in DataLoader(tagger_test_set,
+                                            batch_size=eval_batch_size,
+                                            shuffle=False, collate_fn=tagger_test_set.collate_fn,
+                                            pin_memory=self._pin_memory):
+                        batch = batch_to_device(batch, self._config.device, non_blocking=self._non_blocking)
+                        batch_size = len(batch.word_num)
 
-                    word_reprs, cls_reprs = self._embedding_layers.get_tagger_inputs(batch)
-                    predictions = self._tagger[self._config.active_lang].predict(batch, word_reprs, cls_reprs)
-                    # stack upos/xpos/feats on GPU, one .cpu() transfer, unpack on CPU
-                    tag_stacked = torch.stack([predictions[0], predictions[1], predictions[2]]).detach().cpu().tolist()
-                    predicted_upos, predicted_xpos, predicted_feats = tag_stacked
+                        word_reprs, cls_reprs = self._embedding_layers.get_tagger_inputs(batch)
+                        predictions = self._tagger[self._config.active_lang].predict(batch, word_reprs, cls_reprs)
+                        # stack upos/xpos/feats on GPU, one .cpu() transfer, unpack on CPU
+                        tag_stacked = torch.stack([predictions[0], predictions[1], predictions[2]]).detach().cpu().tolist()
+                        predicted_upos, predicted_xpos, predicted_feats = tag_stacked
 
-                    predicted_dep = predictions[3]
-                    dep_unlabeled = predicted_dep[0].cpu().numpy()
-                    dep_labeled = predicted_dep[1].cpu().numpy()
-                    sentlens = [l + 1 for l in batch.word_num]
-                    head_seqs = [chuliu_edmonds_one_root(adj[:l, :l])[1:] for adj, l in
-                                 zip(dep_unlabeled, sentlens)]
-                    deprel_seqs = [
-                        [itos[DEPREL][dep_labeled[i][j + 1][h]] for j, h in
-                         enumerate(hs)] for i, hs in enumerate(head_seqs)]
+                        predicted_dep = predictions[3]
+                        dep_unlabeled = predicted_dep[0].cpu().numpy()
+                        dep_labeled = predicted_dep[1].cpu().numpy()
+                        sentlens = [l + 1 for l in batch.word_num]
+                        head_seqs = [chuliu_edmonds_one_root(adj[:l, :l])[1:] for adj, l in
+                                     zip(dep_unlabeled, sentlens)]
+                        deprel_seqs = [
+                            [itos[DEPREL][dep_labeled[i][j + 1][h]] for j, h in
+                             enumerate(hs)] for i, hs in enumerate(head_seqs)]
 
-                    pred_tokens = [[[head_seqs[i][j], deprel_seqs[i][j]] for j in range(sentlens[i] - 1)] for i in
-                                   range(batch_size)]
+                        pred_tokens = [[[head_seqs[i][j], deprel_seqs[i][j]] for j in range(sentlens[i] - 1)] for i in
+                                       range(batch_size)]
 
-                    for bid in range(batch_size):
-                        sentid = batch.sent_index[bid]
-                        for i in range(batch.word_num[bid]):
-                            wordid = batch.word_ids[bid][i]
-                            tagger_test_set.conllu_doc[sentid][wordid][UPOS] = itos[UPOS][predicted_upos[bid][i]]
-                            tagger_test_set.conllu_doc[sentid][wordid][XPOS] = itos[XPOS][predicted_xpos[bid][i]]
-                            tagger_test_set.conllu_doc[sentid][wordid][FEATS] = itos[FEATS][predicted_feats[bid][i]]
-                            tagger_test_set.conllu_doc[sentid][wordid][HEAD] = int(pred_tokens[bid][i][0])
-                            tagger_test_set.conllu_doc[sentid][wordid][DEPREL] = pred_tokens[bid][i][1]
+                        for bid in range(batch_size):
+                            sentid = batch.sent_index[bid]
+                            for i in range(batch.word_num[bid]):
+                                wordid = batch.word_ids[bid][i]
+                                tagger_test_set.conllu_doc[sentid][wordid][UPOS] = itos[UPOS][predicted_upos[bid][i]]
+                                tagger_test_set.conllu_doc[sentid][wordid][XPOS] = itos[XPOS][predicted_xpos[bid][i]]
+                                tagger_test_set.conllu_doc[sentid][wordid][FEATS] = itos[FEATS][predicted_feats[bid][i]]
+                                tagger_test_set.conllu_doc[sentid][wordid][HEAD] = int(pred_tokens[bid][i][0])
+                                tagger_test_set.conllu_doc[sentid][wordid][DEPREL] = pred_tokens[bid][i][1]
 
                 tagged_doc = get_output_doc(posdep_sent, tagger_test_set.conllu_doc)
                 tagged_sent = tagged_doc[0][TOKENS]
@@ -1299,20 +1318,21 @@ class Pipeline:
 
                         self._load_adapter_weights(model_name='ner')
 
-                        for batch in DataLoader(ner_test_set,
-                                                batch_size=eval_batch_size,
-                                                shuffle=False, collate_fn=ner_test_set.collate_fn,
-                                                pin_memory=self._pin_memory):
-                            batch = batch_to_device(batch, self._config.device, non_blocking=self._non_blocking)
-                            word_reprs, cls_reprs = self._embedding_layers.get_tagger_inputs(batch)
-                            pred_entity_labels = self._ner_model[self._config.active_lang].predict(batch, word_reprs)
+                        with self._autocast():
+                            for batch in DataLoader(ner_test_set,
+                                                    batch_size=eval_batch_size,
+                                                    shuffle=False, collate_fn=ner_test_set.collate_fn,
+                                                    pin_memory=self._pin_memory):
+                                batch = batch_to_device(batch, self._config.device, non_blocking=self._non_blocking)
+                                word_reprs, cls_reprs = self._embedding_layers.get_tagger_inputs(batch)
+                                pred_entity_labels = self._ner_model[self._config.active_lang].predict(batch, word_reprs)
 
-                            batch_size = len(batch.word_num)
-                            for bid in range(batch_size):
-                                sentid = batch.sent_index[bid]
-                                for i in range(batch.word_num[bid]):
-                                    wordid = batch.word_ids[bid][i]
-                                    dner_doc[sentid][TOKENS][wordid][NER] = pred_entity_labels[bid][i]
+                                batch_size = len(batch.word_num)
+                                for bid in range(batch_size):
+                                    sentid = batch.sent_index[bid]
+                                    for i in range(batch.word_num[bid]):
+                                        wordid = batch.word_ids[bid][i]
+                                        dner_doc[sentid][TOKENS][wordid][NER] = pred_entity_labels[bid][i]
 
                         out = dner_doc[0][TOKENS]
 
@@ -1356,41 +1376,42 @@ class Pipeline:
                     eval_batch_size = int(eval_batch_size / 3)
 
                 itos = self._config.itos[self._config.active_lang]
-                for batch in DataLoader(tagger_test_set,
-                                        batch_size=eval_batch_size,
-                                        shuffle=False, collate_fn=tagger_test_set.collate_fn,
-                                        pin_memory=self._pin_memory):
-                    batch = batch_to_device(batch, self._config.device, non_blocking=self._non_blocking)
-                    batch_size = len(batch.word_num)
+                with self._autocast():
+                    for batch in DataLoader(tagger_test_set,
+                                            batch_size=eval_batch_size,
+                                            shuffle=False, collate_fn=tagger_test_set.collate_fn,
+                                            pin_memory=self._pin_memory):
+                        batch = batch_to_device(batch, self._config.device, non_blocking=self._non_blocking)
+                        batch_size = len(batch.word_num)
 
-                    word_reprs, cls_reprs = self._embedding_layers.get_tagger_inputs(batch)
-                    predictions = self._tagger[self._config.active_lang].predict(batch, word_reprs, cls_reprs)
-                    # stack upos/xpos/feats on GPU, one .cpu() transfer, unpack on CPU
-                    tag_stacked = torch.stack([predictions[0], predictions[1], predictions[2]]).detach().cpu().tolist()
-                    predicted_upos, predicted_xpos, predicted_feats = tag_stacked
+                        word_reprs, cls_reprs = self._embedding_layers.get_tagger_inputs(batch)
+                        predictions = self._tagger[self._config.active_lang].predict(batch, word_reprs, cls_reprs)
+                        # stack upos/xpos/feats on GPU, one .cpu() transfer, unpack on CPU
+                        tag_stacked = torch.stack([predictions[0], predictions[1], predictions[2]]).detach().cpu().tolist()
+                        predicted_upos, predicted_xpos, predicted_feats = tag_stacked
 
-                    predicted_dep = predictions[3]
-                    dep_unlabeled = predicted_dep[0].cpu().numpy()
-                    dep_labeled = predicted_dep[1].cpu().numpy()
-                    sentlens = [l + 1 for l in batch.word_num]
-                    head_seqs = [chuliu_edmonds_one_root(adj[:l, :l])[1:] for adj, l in
-                                 zip(dep_unlabeled, sentlens)]
-                    deprel_seqs = [
-                        [itos[DEPREL][dep_labeled[i][j + 1][h]] for j, h in
-                         enumerate(hs)] for i, hs in enumerate(head_seqs)]
+                        predicted_dep = predictions[3]
+                        dep_unlabeled = predicted_dep[0].cpu().numpy()
+                        dep_labeled = predicted_dep[1].cpu().numpy()
+                        sentlens = [l + 1 for l in batch.word_num]
+                        head_seqs = [chuliu_edmonds_one_root(adj[:l, :l])[1:] for adj, l in
+                                     zip(dep_unlabeled, sentlens)]
+                        deprel_seqs = [
+                            [itos[DEPREL][dep_labeled[i][j + 1][h]] for j, h in
+                             enumerate(hs)] for i, hs in enumerate(head_seqs)]
 
-                    pred_tokens = [[[head_seqs[i][j], deprel_seqs[i][j]] for j in range(sentlens[i] - 1)] for i in
-                                   range(batch_size)]
+                        pred_tokens = [[[head_seqs[i][j], deprel_seqs[i][j]] for j in range(sentlens[i] - 1)] for i in
+                                       range(batch_size)]
 
-                    for bid in range(batch_size):
-                        sentid = batch.sent_index[bid]
-                        for i in range(batch.word_num[bid]):
-                            wordid = batch.word_ids[bid][i]
-                            tagger_test_set.conllu_doc[sentid][wordid][UPOS] = itos[UPOS][predicted_upos[bid][i]]
-                            tagger_test_set.conllu_doc[sentid][wordid][XPOS] = itos[XPOS][predicted_xpos[bid][i]]
-                            tagger_test_set.conllu_doc[sentid][wordid][FEATS] = itos[FEATS][predicted_feats[bid][i]]
-                            tagger_test_set.conllu_doc[sentid][wordid][HEAD] = int(pred_tokens[bid][i][0])
-                            tagger_test_set.conllu_doc[sentid][wordid][DEPREL] = pred_tokens[bid][i][1]
+                        for bid in range(batch_size):
+                            sentid = batch.sent_index[bid]
+                            for i in range(batch.word_num[bid]):
+                                wordid = batch.word_ids[bid][i]
+                                tagger_test_set.conllu_doc[sentid][wordid][UPOS] = itos[UPOS][predicted_upos[bid][i]]
+                                tagger_test_set.conllu_doc[sentid][wordid][XPOS] = itos[XPOS][predicted_xpos[bid][i]]
+                                tagger_test_set.conllu_doc[sentid][wordid][FEATS] = itos[FEATS][predicted_feats[bid][i]]
+                                tagger_test_set.conllu_doc[sentid][wordid][HEAD] = int(pred_tokens[bid][i][0])
+                                tagger_test_set.conllu_doc[sentid][wordid][DEPREL] = pred_tokens[bid][i][1]
 
                 tagged_doc = get_output_doc(in_doc, tagger_test_set.conllu_doc)
                 out = self._lemmatize_doc(tagged_doc, skip_dict_seq2seq=skip_dict_seq2seq)
@@ -1407,20 +1428,21 @@ class Pipeline:
 
                         self._load_adapter_weights(model_name='ner')
 
-                        for batch in DataLoader(ner_test_set,
-                                                batch_size=eval_batch_size,
-                                                shuffle=False, collate_fn=ner_test_set.collate_fn,
-                                                pin_memory=self._pin_memory):
-                            batch = batch_to_device(batch, self._config.device, non_blocking=self._non_blocking)
-                            word_reprs, cls_reprs = self._embedding_layers.get_tagger_inputs(batch)
-                            pred_entity_labels = self._ner_model[self._config.active_lang].predict(batch, word_reprs)
+                        with self._autocast():
+                            for batch in DataLoader(ner_test_set,
+                                                    batch_size=eval_batch_size,
+                                                    shuffle=False, collate_fn=ner_test_set.collate_fn,
+                                                    pin_memory=self._pin_memory):
+                                batch = batch_to_device(batch, self._config.device, non_blocking=self._non_blocking)
+                                word_reprs, cls_reprs = self._embedding_layers.get_tagger_inputs(batch)
+                                pred_entity_labels = self._ner_model[self._config.active_lang].predict(batch, word_reprs)
 
-                            batch_size = len(batch.word_num)
-                            for bid in range(batch_size):
-                                sentid = batch.sent_index[bid]
-                                for i in range(batch.word_num[bid]):
-                                    wordid = batch.word_ids[bid][i]
-                                    dner_doc[sentid][TOKENS][wordid][NER] = pred_entity_labels[bid][i]
+                                batch_size = len(batch.word_num)
+                                for bid in range(batch_size):
+                                    sentid = batch.sent_index[bid]
+                                    for i in range(batch.word_num[bid]):
+                                        wordid = batch.word_ids[bid][i]
+                                        dner_doc[sentid][TOKENS][wordid][NER] = pred_entity_labels[bid][i]
 
                         out = dner_doc
 

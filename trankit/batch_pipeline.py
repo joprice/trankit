@@ -79,7 +79,7 @@ def batch_process(pipeline, docs, skip_dict_seq2seq=None):
 
     itos = config.itos[active_lang]
 
-    with torch.inference_mode():
+    with torch.inference_mode(), pipeline._autocast():
         for batch in DataLoader(tagger_test_set,
                                 batch_size=eval_batch_size,
                                 shuffle=False, collate_fn=tagger_test_set.collate_fn,
@@ -135,7 +135,7 @@ def batch_process(pipeline, docs, skip_dict_seq2seq=None):
 
             pipeline._load_adapter_weights(model_name='ner')
 
-            with torch.inference_mode():
+            with torch.inference_mode(), pipeline._autocast():
                 for batch in DataLoader(ner_test_set,
                                         batch_size=eval_batch_size,
                                         shuffle=False, collate_fn=ner_test_set.collate_fn,

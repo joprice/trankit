@@ -6,6 +6,7 @@
 # ── Config ──────────────────────────────────────────────────
 EMBEDDING = "xlm-roberta-base"
 CACHE_ADAPTERS = True
+FP16 = True          # Set to False to disable autocast, None for auto
 WARMUP_RUNS = 2
 BENCHMARK_RUNS = 10
 
@@ -139,12 +140,12 @@ def format_row(r):
 print(f"\n{'=' * 70}")
 print(f"Trankit CUDA Benchmark — {EMBEDDING} (adapter-caching)")
 print(f"Warmup: {WARMUP_RUNS} | Runs: {BENCHMARK_RUNS}")
-print(f"cache_adapters: {CACHE_ADAPTERS}")
+print(f"cache_adapters: {CACHE_ADAPTERS} | fp16: {FP16}")
 print(f"{'=' * 70}\n")
 
 torch.cuda.empty_cache()
 t0 = time.perf_counter()
-p = Pipeline("english", gpu=True, cache_dir="./cache", embedding=EMBEDDING, cache_adapters=CACHE_ADAPTERS)
+p = Pipeline("english", gpu=True, cache_dir="./cache", embedding=EMBEDDING, fp16=FP16, cache_adapters=CACHE_ADAPTERS)
 init_time = time.perf_counter() - t0
 device_type = str(p._config.device.type)
 print(f"Device: {device_type}")
@@ -194,6 +195,7 @@ with open(json_path, "w") as f:
         "device": device_type,
         "gpu": torch.cuda.get_device_name(0),
         "cache_adapters": CACHE_ADAPTERS,
+        "fp16": FP16,
         "warmup_runs": WARMUP_RUNS,
         "benchmark_runs": BENCHMARK_RUNS,
         "init_time_sec": round(init_time, 2),
