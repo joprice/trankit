@@ -17,7 +17,7 @@ from datetime import datetime
 import langid
 
 import os
-from transformers import XLMRobertaTokenizer
+from transformers import XLMRobertaTokenizerFast
 
 TRANKIT_QUIET = os.environ.get("TRANKIT_QUIET", "").lower() in ("1", "true", "yes")
 
@@ -192,7 +192,7 @@ class Pipeline:
             os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
 
         try:
-            self.master_config.wordpiece_splitter = XLMRobertaTokenizer.from_pretrained(
+            self.master_config.wordpiece_splitter = XLMRobertaTokenizerFast.from_pretrained(
                 self.master_config.embedding_name,
                 cache_dir=cache_dir,
             )

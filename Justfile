@@ -32,6 +32,36 @@ bench-gpu:
     just bench xlm-roberta-base
     just bench xlm-roberta-large
 
+# run benchmark under cProfile
+# device: "gpu" (mps/cuda) or "cpu"
+# pass out=<path> to override output path
+bench-profile model="xlm-roberta-base" device="gpu" out="":
+    #!/usr/bin/env bash
+    set -eu
+    mkdir -p trankit/tests/profiles
+    profile_out="{{out}}"
+    if [ -z "$profile_out" ]; then
+      profile_out="trankit/tests/profiles/bench_{{model}}_{{device}}.prof"
+    fi
+    if [ "{{device}}" = "cpu" ]; then
+      {{python}} -m cProfile -o "$profile_out" trankit/tests/test_benchmark.py {{model}} --cpu
+    else
+      {{python}} -m cProfile -o "$profile_out" trankit/tests/test_benchmark.py {{model}}
+    fi
+    echo "Profile written to $profile_out"
+
+# run cProfile benchmarks for base/large on both cpu and gpu
+bench-profile-all:
+    set -eu
+    just bench-profile xlm-roberta-base cpu
+    just bench-profile xlm-roberta-large cpu
+    just bench-profile xlm-roberta-base gpu
+    just bench-profile xlm-roberta-large gpu
+
+# print top methods from a profile file
+bench-profile-report profile="trankit/tests/profiles/bench_xlm-roberta-base_gpu.prof" sort="cumtime" limit="40":
+    {{python}} -c "import pstats; s=pstats.Stats('{{profile}}'); s.strip_dirs().sort_stats('{{sort}}').print_stats(int('{{limit}}'))"
+
 # run correctness then benchmark (both gpu)
 verify: test (bench)
 

@@ -3,7 +3,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 ./save_dir/
-./cache/
+/cache/
 
 # C extensions
 *.so
@@ -130,4 +130,5 @@ dmypy.json
 # Pyre type checker
 .pyre/
 .idea/
-cache/trankit/
+
+trankit/tests/profiles/

@@ -1,5 +1,6 @@
 from .base_utils import *
 from copy import deepcopy
+from .tokenizer_batching import batched_tokenize_pseudo_tokens
 
 NEWLINE_WHITESPACE_RE = re.compile(r'\n\s*\n')
 NUMERIC_RE = re.compile(r'^([\d]+[,\.]*)+$')
@@ -68,16 +69,38 @@ def get_character_locations(string_units, text):
 
 
 def get_mapping_wp_character_to_or_character(wordpiece_splitter, wp_single_string, or_single_string):
-    wp_char_to_or_char = {}
-    converted_text = ''
-    for char_id, char in enumerate(or_single_string):
-        converted_chars = ''.join(
-            [c if not c.startswith('▁') else c[1:] for c in wordpiece_splitter.tokenize(char) if c != '▁'])
+    if not or_single_string:
+        return {}
+    if not wordpiece_splitter.is_fast:
+        raise TypeError(
+            f"get_mapping_wp_character_to_or_character requires a fast tokenizer "
+            f"(got {type(wordpiece_splitter).__name__})"
+        )
+    chars = list(or_single_string)
+    enc = wordpiece_splitter(chars, is_split_into_words=True, add_special_tokens=False)
+    wids = enc.word_ids()
+    if wids is None:
+        raise RuntimeError(
+            "word_ids() returned None — is_split_into_words may not be supported"
+        )
+    all_tokens = wordpiece_splitter.convert_ids_to_tokens(enc.input_ids)
 
-        for converted_c in converted_chars:
-            c_id = len(converted_text)
-            wp_char_to_or_char[c_id] = char_id
-            converted_text += converted_c
+    # Build per-character converted strings (same logic as old code)
+    char_converted = [''] * len(chars)
+    for pos, wid in enumerate(wids):
+        if wid is not None and all_tokens[pos] != '▁':
+            tok = all_tokens[pos]
+            if tok.startswith('▁'):
+                tok = tok[1:]
+            char_converted[wid] += tok
+
+    # Build the mapping
+    wp_char_to_or_char = {}
+    wp_offset = 0
+    for char_id, converted in enumerate(char_converted):
+        for _ in converted:
+            wp_char_to_or_char[wp_offset] = char_id
+            wp_offset += 1
     return wp_char_to_or_char
 
 
@@ -92,15 +115,13 @@ def wordpiece_tokenize_from_raw_text(wordpiece_splitter, sent_text, sent_labels,
             sent_text = sent_text.replace('-', '،')
         pseudo_tokens = split_to_substrings(sent_text)
     end_pids = set()
-    group_pieces = [wordpiece_splitter.tokenize(t) for t in
-                    pseudo_tokens]  # texts could be considered as a list of pseudo tokens
+    group_pieces = batched_tokenize_pseudo_tokens(wordpiece_splitter, pseudo_tokens)
     flat_wordpieces = []
     for group in group_pieces:
         if len(group) > 0:
             for p in group:
-                if p != '▁':
-                    pid = len(flat_wordpieces)
-                    flat_wordpieces.append((p, pid))
+                pid = len(flat_wordpieces)
+                flat_wordpieces.append((p, pid))
             end_pids.add(len(flat_wordpieces) - 1)
 
     single_original_string = ''.join([c.strip() for c in sent_text])

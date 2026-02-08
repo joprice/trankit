@@ -1,4 +1,5 @@
 from . import *
+from . import batched_tokenize_words, encode_pieces_from_ids
 
 # for sents
 instance_fields = [
@@ -56,10 +57,7 @@ class TaggerDatasetLive(Dataset):
         new_data = []
         for inst in self.data:
             words = inst['words']
-            pieces = [[p for p in self.wordpiece_splitter.tokenize(w) if p != '▁'] for w in words]
-            for ps in pieces:
-                if len(ps) == 0:
-                    ps += ['-']
+            pieces = batched_tokenize_words(self.wordpiece_splitter, words)
             flat_pieces = [p for ps in pieces for p in ps]
             if len(flat_pieces) > self.max_input_length - 2:
                 sub_insts = []
@@ -94,9 +92,9 @@ class TaggerDatasetLive(Dataset):
         wordpiece_splitter = self.wordpiece_splitter
         data = []
         for inst in self.data:
-            pieces = inst['pieces']
+            pieces = inst['pieces']                           # list[list[int]]
             word_lens = [len(x) for x in pieces]
-            flat_pieces = [p for ps in pieces for p in ps]
+            flat_piece_ids = [p for ps in pieces for p in ps]
 
             word_span_idxs = []
             start = 1
@@ -104,12 +102,7 @@ class TaggerDatasetLive(Dataset):
                 word_span_idxs.append([start, start + l])
                 start += l
 
-            piece_idxs = wordpiece_splitter.encode(
-                flat_pieces,
-                add_special_tokens=True,
-                max_length=self.max_input_length,
-                truncation=True
-            )
+            piece_idxs = encode_pieces_from_ids(wordpiece_splitter, flat_piece_ids, self.max_input_length)
 
             attn_masks = [1] * len(piece_idxs)
 
@@ -260,14 +253,11 @@ class TaggerDataset(Dataset):
         data = []
         for inst in self.data:
             words = inst['words']
-            pieces = [[p for p in wordpiece_splitter.tokenize(w) if p != '▁'] for w in words]
-            for ps in pieces:
-                if len(ps) == 0:
-                    ps += ['-']
+            pieces = batched_tokenize_words(wordpiece_splitter, words)
             word_lens = [len(x) for x in pieces]
             assert 0 not in word_lens
-            flat_pieces = [p for ps in pieces for p in ps]
-            assert len(flat_pieces) > 0
+            flat_piece_ids = [p for ps in pieces for p in ps]
+            assert len(flat_piece_ids) > 0
 
             word_span_idxs = []
             start = 1
@@ -276,12 +266,7 @@ class TaggerDataset(Dataset):
                 start += l
 
             # Pad word pieces with special tokens
-            piece_idxs = wordpiece_splitter.encode(
-                flat_pieces,
-                add_special_tokens=True,
-                max_length=self.config.max_input_length,
-                truncation=True
-            )
+            piece_idxs = encode_pieces_from_ids(wordpiece_splitter, flat_piece_ids, self.config.max_input_length)
             assert len(piece_idxs) <= self.config.max_input_length
 
             attn_masks = [1] * len(piece_idxs)

@@ -52,12 +52,7 @@ class TokenizeDatasetLive(Dataset):
             wordpiece_ends = inst['wordpiece_ends']
             paragraph_index = inst['paragraph_index']
             # Pad word pieces with special tokens
-            piece_idxs = wordpiece_splitter.encode(
-                wordpieces,
-                add_special_tokens=True,
-                max_length=self.max_input_length,
-                truncation=True
-            )
+            piece_idxs = encode_pieces(wordpiece_splitter, wordpieces, self.max_input_length)
             assert len(piece_idxs) <= self.max_input_length
 
             pad_num = self.max_input_length - len(piece_idxs)
@@ -180,12 +175,7 @@ class TokenizeDataset(Dataset):
             wordpiece_ends = inst['wordpiece_ends']
             paragraph_index = inst['paragraph_index']
             # Pad word pieces with special tokens
-            piece_idxs = self.config.wordpiece_splitter.encode(
-                wordpieces,
-                add_special_tokens=True,
-                max_length=self.config.max_input_length,
-                truncation=True
-            )
+            piece_idxs = encode_pieces(self.config.wordpiece_splitter, wordpieces, self.config.max_input_length)
             assert len(piece_idxs) <= self.config.max_input_length
 
             pad_num = self.config.max_input_length - len(piece_idxs)

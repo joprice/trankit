@@ -15,7 +15,7 @@ from .utils.chuliu_edmonds import *
 from tqdm import tqdm
 from torch.optim import AdamW
 from transformers import get_linear_schedule_with_warmup
-from transformers import XLMRobertaTokenizer
+from transformers import XLMRobertaTokenizerFast
 import logging
 
 
@@ -212,7 +212,7 @@ class TPipeline:
 
         # wordpiece splitter
         if self._task not in ['mwt', 'lemmatize']:
-            self.master_config.wordpiece_splitter = XLMRobertaTokenizer.from_pretrained(self.master_config.embedding_name,
+            self.master_config.wordpiece_splitter = XLMRobertaTokenizerFast.from_pretrained(self.master_config.embedding_name,
                                                                                    cache_dir=self.master_config._save_dir)
 
     def _prepare_tokenize(self):
