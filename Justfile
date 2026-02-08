@@ -22,10 +22,10 @@ bench-cpu model="xlm-roberta-base":
 # - T4 results are produced separately (e.g., Colab) and copied into trankit/tests manually
 bench-all:
     set -eu
-    just bench-cpu model=xlm-roberta-base
-    just bench-cpu model=xlm-roberta-large
-    just bench model=xlm-roberta-base
-    just bench model=xlm-roberta-large
+    just bench-cpu xlm-roberta-base
+    just bench-cpu xlm-roberta-large
+    just bench xlm-roberta-base
+    just bench xlm-roberta-large
 
 # run correctness then benchmark (both gpu)
 verify: test (bench)
