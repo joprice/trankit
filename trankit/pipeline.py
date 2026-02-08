@@ -13,13 +13,50 @@ from .utils.conll import *
 from .utils.tbinfo import tbname2training_id, lang2treebank
 from .utils.chuliu_edmonds import *
 from adapters.loading import AdapterLoader
+from adapters import AdapterConfig
 from datetime import datetime
 import langid
+import re
+import hashlib
 
 import os
 from transformers import XLMRobertaTokenizerFast
 
 TRANKIT_QUIET = os.environ.get("TRANKIT_QUIET", "").lower() in ("1", "true", "yes")
+
+_ADAPTER_NAME_RE = re.compile(r'[^A-Za-z0-9_]+')
+
+
+def _adapter_slot_name(task, lang):
+    """Build a safe, collision-free adapter slot name.
+
+    Sanitizes lang to [A-Za-z0-9_] and appends a short hash of the
+    original lang to avoid collisions (e.g. 'french-partut' and
+    'french_partut' would otherwise both sanitize to the same string).
+
+    Example: 'tokenizer_french_partut_a1b2'
+    """
+    sanitized = _ADAPTER_NAME_RE.sub('_', lang)
+    short_hash = hashlib.md5(lang.encode("utf-8")).hexdigest()[:4]
+    return f"{task}_{sanitized}_{short_hash}"
+
+
+def _active_adapter_names(xlmr):
+    """Return set of active adapter name strings, defensively handling
+    composition objects and None."""
+    active = xlmr.active_adapters
+    if active is None:
+        return set()
+    if isinstance(active, str):
+        return {active}
+    if hasattr(active, 'flatten'):
+        try:
+            return set(str(n) for n in active.flatten())
+        except Exception:
+            return set()
+    if isinstance(active, (list, tuple)):
+        return set(str(n) for n in active)
+    return set()
 
 
 def is_string(input):
@@ -47,7 +84,8 @@ def is_list_list_strings(input):
 
 
 class Pipeline:
-    def __init__(self, lang, cache_dir=None, gpu=True, embedding='xlm-roberta-base', cpu_lemma=None):
+    def __init__(self, lang, cache_dir=None, gpu=True, embedding='xlm-roberta-base',
+                 cpu_lemma=None, cache_adapters=False):
         super(Pipeline, self).__init__()
         # auto detection of lang
         if lang == 'auto':
@@ -96,6 +134,14 @@ class Pipeline:
         self._embedding_layers.eval()
         # for loading & auto-converting adapter weights
         self._adapter_loader = AdapterLoader(self._embedding_layers.xlmr, "text_task")
+
+        self._cache_adapters = cache_adapters
+        if cache_adapters:
+            self._resident_adapters = set()
+            self._adapter_config = AdapterConfig.load(
+                "pfeiffer",
+                reduction_factor=6 if self._config.embedding_name == 'xlm-roberta-base' else 4
+            )
 
         # tokenizers
         self._tokenizer = {}
@@ -210,7 +256,8 @@ class Pipeline:
         self._config = self.master_config
         # Track which language's adapter is loaded for each adapter type
         # This allows caching adapters across inferences for the same language
-        self._config.active_adapters = {'tokenizer': None, 'tagger': None, 'ner': None}
+        if not getattr(self, '_cache_adapters', False):
+            self._config.active_adapters = {'tokenizer': None, 'tagger': None, 'ner': None}
         self._config.max_input_length = tbname2max_input_length.get(lang2treebank[lang],
                                                                     400)  # this is for tokenizer only
 
@@ -239,7 +286,7 @@ class Pipeline:
             self._config.active_lang = lang
             self.active_lang = lang
             # Only reset adapters if language actually changed
-            if old_lang != lang:
+            if old_lang != lang and not self._cache_adapters:
                 self._config.active_adapters = {'tokenizer': None, 'tagger': None, 'ner': None}
             self._config.treebank_name = lang2treebank[lang]
             self._config.max_input_length = tbname2max_input_length.get(lang2treebank[lang],
@@ -260,7 +307,7 @@ class Pipeline:
         self._config.active_lang = lang
         self.active_lang = lang
         # Only reset adapters if language actually changed
-        if old_lang != lang:
+        if old_lang != lang and not self._cache_adapters:
             self._config.active_adapters = {'tokenizer': None, 'tagger': None, 'ner': None}
         self._config.treebank_name = lang2treebank[lang]
         self._config.max_input_length = tbname2max_input_length.get(lang2treebank[lang],
@@ -351,30 +398,72 @@ class Pipeline:
     def _load_adapter_weights(self, model_name):
         assert model_name in ['tokenizer', 'tagger', 'ner']
         current_lang = self._config.active_lang
-        cached_lang = self._config.active_adapters.get(model_name)
 
-        # Only load adapter weights when language changed for this adapter type
-        if cached_lang != current_lang:
-            if model_name == 'tokenizer':
-                pretrained_weights = self._tokenizer[current_lang].pretrained_tokenizer_weights
-            elif model_name == 'tagger':
-                pretrained_weights = self._tagger[current_lang].pretrained_tagger_weights
-            else:
-                assert model_name == 'ner'
-                pretrained_weights = self._ner_model[current_lang].pretrained_ner_weights
+        if self._cache_adapters:
+            # Per-language adapter slots: zero-cost warm switch
+            slot_name = _adapter_slot_name(model_name, current_lang)
 
-            # Load into the task-specific adapter slot (tokenizer/tagger/ner)
-            # instead of a shared 'embedding' slot. The pretrained weights already
-            # use matching names (e.g. layer_text_task_adapters.tokenizer.*), so
-            # no load_as rename is needed.
-            self._adapter_loader.load_from_state_dict(
-                pretrained_weights, model_name, start_prefix="xlmr."
-            )
-            # Cache which language's adapter is now loaded for this type
-            self._config.active_adapters[model_name] = current_lang
+            if slot_name not in self._resident_adapters:
+                # Guard: check model state as source of truth
+                if slot_name in self._embedding_layers.xlmr.adapters_config.adapters:
+                    self._resident_adapters.add(slot_name)
+                else:
+                    self._embedding_layers.xlmr.add_adapter(slot_name, config=self._adapter_config)
 
-        # Activate this task's adapter for the next forward pass
-        self._embedding_layers.xlmr.set_active_adapters([model_name])
+                    if model_name == 'tokenizer':
+                        pretrained_weights = self._tokenizer[current_lang].pretrained_tokenizer_weights
+                    elif model_name == 'tagger':
+                        pretrained_weights = self._tagger[current_lang].pretrained_tagger_weights
+                    else:
+                        pretrained_weights = self._ner_model[current_lang].pretrained_ner_weights
+
+                    self._adapter_loader.load_from_state_dict(
+                        pretrained_weights, model_name, load_as=slot_name, start_prefix="xlmr."
+                    )
+                    # Move new adapter params to model device (and half if needed).
+                    # Already-on-device params are no-ops for .to()/.half().
+                    self._embedding_layers.xlmr.to(self._config.device)
+                    if self._use_half:
+                        self._embedding_layers.xlmr.half()
+                    self._resident_adapters.add(slot_name)
+
+            # Warm path: pointer swap only (~0.5ms)
+            self._embedding_layers.xlmr.set_active_adapters([slot_name])
+        else:
+            # Original behavior: copy weights into fixed slot on language change
+            cached_lang = self._config.active_adapters.get(model_name)
+
+            if cached_lang != current_lang:
+                if model_name == 'tokenizer':
+                    pretrained_weights = self._tokenizer[current_lang].pretrained_tokenizer_weights
+                elif model_name == 'tagger':
+                    pretrained_weights = self._tagger[current_lang].pretrained_tagger_weights
+                else:
+                    pretrained_weights = self._ner_model[current_lang].pretrained_ner_weights
+
+                self._adapter_loader.load_from_state_dict(
+                    pretrained_weights, model_name, start_prefix="xlmr."
+                )
+                self._config.active_adapters[model_name] = current_lang
+
+            self._embedding_layers.xlmr.set_active_adapters([model_name])
+
+    def evict_language_adapters(self, lang):
+        """Remove per-language adapter slots from XLM-R, freeing device memory.
+
+        Call this when evicting a language from an LRU cache.
+        No-op when cache_adapters=False or no adapters for this language are loaded.
+        """
+        if not self._cache_adapters:
+            return
+        xlmr = self._embedding_layers.xlmr
+        for task in ('tokenizer', 'tagger', 'ner'):
+            slot_name = _adapter_slot_name(task, lang)
+            if slot_name in self._resident_adapters:
+                if slot_name in _active_adapter_names(xlmr):
+                    xlmr.set_active_adapters(['tokenizer'])
+                xlmr.delete_adapter(slot_name)
+                self._resident_adapters.discard(slot_name)
 
     def _detect_lang_and_switch(self, text):
         detected_code = langid.classify(text)[0]
@@ -388,7 +477,7 @@ class Pipeline:
         self._config.active_lang = lang
         self.active_lang = lang
         # Only reset adapters if language actually changed
-        if old_lang != lang:
+        if old_lang != lang and not self._cache_adapters:
             self._config.active_adapters = {'tokenizer': None, 'tagger': None, 'ner': None}
         self._config.treebank_name = lang2treebank[lang]
         self._config.max_input_length = tbname2max_input_length.get(lang2treebank[lang],

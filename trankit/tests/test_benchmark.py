@@ -114,7 +114,7 @@ def format_row(r):
     )
 
 
-def run_benchmarks(embedding, gpu=True, profile_path=None):
+def run_benchmarks(embedding, gpu=True, profile_path=None, cache_adapters=True):
     profiler = None
     if profile_path is not None:
         if profile_path == "":
@@ -129,13 +129,14 @@ def run_benchmarks(embedding, gpu=True, profile_path=None):
     print(f"Trankit Inference Benchmark")
     print(f"Embedding: {embedding}")
     print(f"Warmup runs: {WARMUP_RUNS}  |  Benchmark runs: {BENCHMARK_RUNS}")
+    print(f"cache_adapters: {cache_adapters}")
     if profile_path:
         print(f"Profiling: ON (warmup/init excluded)")
     print(f"{'=' * 70}\n")
 
     print("Initializing pipeline...")
     t0 = time.perf_counter()
-    p = trankit.Pipeline("english", embedding=embedding, gpu=gpu)
+    p = trankit.Pipeline("english", embedding=embedding, gpu=gpu, cache_adapters=cache_adapters)
     init_time = time.perf_counter() - t0
     device_type = str(p._config.device.type)
     print(f"Pipeline initialized in {init_time:.2f}s (device: {device_type})\n")
@@ -201,10 +202,11 @@ if __name__ == "__main__":
     flags = [a for a in sys.argv[1:] if a.startswith("--")]
     embedding = args[0] if args else "xlm-roberta-base"
     gpu = "--cpu" not in flags
+    cache_adapters = "--no-cache-adapters" not in flags
     profile_path = None
     for f in flags:
         if f.startswith("--profile="):
             profile_path = f.split("=", 1)[1]
         elif f == "--profile":
             profile_path = ""  # sentinel: use default path
-    run_benchmarks(embedding, gpu=gpu, profile_path=profile_path)
+    run_benchmarks(embedding, gpu=gpu, profile_path=profile_path, cache_adapters=cache_adapters)

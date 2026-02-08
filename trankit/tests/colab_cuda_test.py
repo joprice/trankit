@@ -4,6 +4,7 @@
 # ── Config ──────────────────────────────────────────────────
 EMBEDDING = "xlm-roberta-base"  # or "xlm-roberta-large"
 CPU_LEMMA = False  # True = run seq2seq lemma decoder on CPU (avoids GPU sync; helps on MPS, may hurt on CUDA)
+CACHE_ADAPTERS = False  # True = keep per-language adapter slots in XLM-R for zero-cost language switching
 
 # ── 1. Check CUDA ────────────────────────────────────────────
 import torch
@@ -64,7 +65,7 @@ print("=" * 70)
 torch.cuda.empty_cache()
 
 t0 = time.perf_counter()
-p = Pipeline("english", gpu=True, cache_dir="./cache", embedding=EMBEDDING, cpu_lemma=CPU_LEMMA)
+p = Pipeline("english", gpu=True, cache_dir="./cache", embedding=EMBEDDING, cpu_lemma=CPU_LEMMA, cache_adapters=CACHE_ADAPTERS)
 init_time = time.perf_counter() - t0
 device_type = str(p._config.device.type)
 print(f"Device: {device_type}")
