@@ -843,15 +843,11 @@ class Pipeline:
 
             word_reprs, cls_reprs = self._embedding_layers.get_tagger_inputs(batch)
             predictions = self._tagger[self._config.active_lang].predict(batch, word_reprs, cls_reprs)
-            predicted_upos = predictions[0]
-            predicted_xpos = predictions[1]
-            predicted_feats = predictions[2]
+            # stack upos/xpos/feats on GPU, one .cpu() transfer, unpack on CPU
+            tag_stacked = torch.stack([predictions[0], predictions[1], predictions[2]]).detach().cpu().tolist()
+            predicted_upos, predicted_xpos, predicted_feats = tag_stacked
 
-            predicted_upos = predicted_upos.detach().cpu().tolist()
-            predicted_xpos = predicted_xpos.detach().cpu().tolist()
-            predicted_feats = predicted_feats.detach().cpu().tolist()
-
-            # head, deprel
+            # head, deprel — different dtypes, transfer back-to-back
             predicted_dep = predictions[3]
             dep_unlabeled = predicted_dep[0].cpu().numpy()
             dep_labeled = predicted_dep[1].cpu().numpy()
@@ -926,15 +922,11 @@ class Pipeline:
 
             word_reprs, cls_reprs = self._embedding_layers.get_tagger_inputs(batch)
             predictions = self._tagger[self._config.active_lang].predict(batch, word_reprs, cls_reprs)
-            predicted_upos = predictions[0]
-            predicted_xpos = predictions[1]
-            predicted_feats = predictions[2]
+            # stack upos/xpos/feats on GPU, one .cpu() transfer, unpack on CPU
+            tag_stacked = torch.stack([predictions[0], predictions[1], predictions[2]]).detach().cpu().tolist()
+            predicted_upos, predicted_xpos, predicted_feats = tag_stacked
 
-            predicted_upos = predicted_upos.detach().cpu().tolist()
-            predicted_xpos = predicted_xpos.detach().cpu().tolist()
-            predicted_feats = predicted_feats.detach().cpu().tolist()
-
-            # head, deprel
+            # head, deprel — different dtypes, transfer back-to-back
             predicted_dep = predictions[3]
             dep_unlabeled = predicted_dep[0].cpu().numpy()
             dep_labeled = predicted_dep[1].cpu().numpy()
@@ -1224,9 +1216,9 @@ class Pipeline:
 
                     word_reprs, cls_reprs = self._embedding_layers.get_tagger_inputs(batch)
                     predictions = self._tagger[self._config.active_lang].predict(batch, word_reprs, cls_reprs)
-                    predicted_upos = predictions[0].detach().cpu().tolist()
-                    predicted_xpos = predictions[1].detach().cpu().tolist()
-                    predicted_feats = predictions[2].detach().cpu().tolist()
+                    # stack upos/xpos/feats on GPU, one .cpu() transfer, unpack on CPU
+                    tag_stacked = torch.stack([predictions[0], predictions[1], predictions[2]]).detach().cpu().tolist()
+                    predicted_upos, predicted_xpos, predicted_feats = tag_stacked
 
                     predicted_dep = predictions[3]
                     dep_unlabeled = predicted_dep[0].cpu().numpy()
@@ -1341,9 +1333,9 @@ class Pipeline:
 
                     word_reprs, cls_reprs = self._embedding_layers.get_tagger_inputs(batch)
                     predictions = self._tagger[self._config.active_lang].predict(batch, word_reprs, cls_reprs)
-                    predicted_upos = predictions[0].detach().cpu().tolist()
-                    predicted_xpos = predictions[1].detach().cpu().tolist()
-                    predicted_feats = predictions[2].detach().cpu().tolist()
+                    # stack upos/xpos/feats on GPU, one .cpu() transfer, unpack on CPU
+                    tag_stacked = torch.stack([predictions[0], predictions[1], predictions[2]]).detach().cpu().tolist()
+                    predicted_upos, predicted_xpos, predicted_feats = tag_stacked
 
                     predicted_dep = predictions[3]
                     dep_unlabeled = predicted_dep[0].cpu().numpy()

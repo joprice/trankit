@@ -9,6 +9,7 @@ and the full pipeline. Run with:
 embedding defaults to xlm-roberta-base.
 """
 
+import cProfile
 import os
 import sys
 import time
@@ -56,10 +57,10 @@ def count_sentences(result):
     return 1
 
 
-def benchmark_task(fn, text, label, runs=BENCHMARK_RUNS, warmup=WARMUP_RUNS):
+def benchmark_task(fn, text, label, runs=BENCHMARK_RUNS, warmup=WARMUP_RUNS, profiler=None):
     """Benchmark a single task function, returning timing stats and throughput."""
     with torch.inference_mode():
-        # Warmup
+        # Warmup (not profiled)
         for _ in range(warmup):
             result = fn(text)
 
@@ -67,13 +68,17 @@ def benchmark_task(fn, text, label, runs=BENCHMARK_RUNS, warmup=WARMUP_RUNS):
         num_tokens = count_tokens(result)
         num_sentences = count_sentences(result)
 
-        # Timed runs
+        # Timed runs (profiled if profiler provided)
+        if profiler is not None:
+            profiler.enable()
         times = []
         for _ in range(runs):
             start = time.perf_counter()
             fn(text)
             elapsed = time.perf_counter() - start
             times.append(elapsed)
+        if profiler is not None:
+            profiler.disable()
 
     mean_t = statistics.mean(times)
     stdev_t = statistics.stdev(times) if len(times) > 1 else 0.0
@@ -109,11 +114,23 @@ def format_row(r):
     )
 
 
-def run_benchmarks(embedding, gpu=True):
+def run_benchmarks(embedding, gpu=True, profile_path=None):
+    profiler = None
+    if profile_path is not None:
+        if profile_path == "":
+            # default path
+            out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "profiles")
+            os.makedirs(out_dir, exist_ok=True)
+            device_label = "cpu" if not gpu else "gpu"
+            profile_path = os.path.join(out_dir, f"bench_{embedding}_{device_label}.prof")
+        profiler = cProfile.Profile()
+
     print(f"\n{'=' * 70}")
     print(f"Trankit Inference Benchmark")
     print(f"Embedding: {embedding}")
     print(f"Warmup runs: {WARMUP_RUNS}  |  Benchmark runs: {BENCHMARK_RUNS}")
+    if profile_path:
+        print(f"Profiling: ON (warmup/init excluded)")
     print(f"{'=' * 70}\n")
 
     print("Initializing pipeline...")
@@ -134,7 +151,7 @@ def run_benchmarks(embedding, gpu=True):
         ("ner (short)", p.ner),
         ("full pipeline (short)", p),
     ]:
-        r = benchmark_task(fn, SHORT_TEXT, label)
+        r = benchmark_task(fn, SHORT_TEXT, label, profiler=profiler)
         results.append(r)
         print(format_row(r))
 
@@ -149,7 +166,7 @@ def run_benchmarks(embedding, gpu=True):
         ("ner (long)", p.ner),
         ("full pipeline (long)", p),
     ]:
-        r = benchmark_task(fn, LONG_TEXT, label)
+        r = benchmark_task(fn, LONG_TEXT, label, profiler=profiler)
         results.append(r)
         print(format_row(r))
 
@@ -174,10 +191,20 @@ def run_benchmarks(embedding, gpu=True):
         )
     print(f"Results saved to {out_path}")
 
+    if profiler is not None:
+        profiler.dump_stats(profile_path)
+        print(f"Profile written to {profile_path}")
+
 
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     flags = [a for a in sys.argv[1:] if a.startswith("--")]
     embedding = args[0] if args else "xlm-roberta-base"
     gpu = "--cpu" not in flags
-    run_benchmarks(embedding, gpu=gpu)
+    profile_path = None
+    for f in flags:
+        if f.startswith("--profile="):
+            profile_path = f.split("=", 1)[1]
+        elif f == "--profile":
+            profile_path = ""  # sentinel: use default path
+    run_benchmarks(embedding, gpu=gpu, profile_path=profile_path)

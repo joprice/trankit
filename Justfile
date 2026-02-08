@@ -32,23 +32,22 @@ bench-gpu:
     just bench xlm-roberta-base
     just bench xlm-roberta-large
 
-# run benchmark under cProfile
+# run benchmark under cProfile (only timed runs, excludes warmup/init)
 # device: "gpu" (mps/cuda) or "cpu"
 # pass out=<path> to override output path
 bench-profile model="xlm-roberta-base" device="gpu" out="":
     #!/usr/bin/env bash
     set -eu
-    mkdir -p trankit/tests/profiles
-    profile_out="{{out}}"
-    if [ -z "$profile_out" ]; then
-      profile_out="trankit/tests/profiles/bench_{{model}}_{{device}}.prof"
+    if [ -z "{{out}}" ]; then
+      profile_flag="--profile"
+    else
+      profile_flag="--profile={{out}}"
     fi
     if [ "{{device}}" = "cpu" ]; then
-      {{python}} -m cProfile -o "$profile_out" trankit/tests/test_benchmark.py {{model}} --cpu
+      {{python}} trankit/tests/test_benchmark.py {{model}} --cpu "$profile_flag"
     else
-      {{python}} -m cProfile -o "$profile_out" trankit/tests/test_benchmark.py {{model}}
+      {{python}} trankit/tests/test_benchmark.py {{model}} "$profile_flag"
     fi
-    echo "Profile written to $profile_out"
 
 # run cProfile benchmarks for base/large on both cpu and gpu
 bench-profile-all:
