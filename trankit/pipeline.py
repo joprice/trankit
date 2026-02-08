@@ -47,7 +47,7 @@ def is_list_list_strings(input):
 
 
 class Pipeline:
-    def __init__(self, lang, cache_dir=None, gpu=True, embedding='xlm-roberta-base'):
+    def __init__(self, lang, cache_dir=None, gpu=True, embedding='xlm-roberta-base', cpu_lemma=None):
         super(Pipeline, self).__init__()
         # auto detection of lang
         if lang == 'auto':
@@ -68,6 +68,11 @@ class Pipeline:
         self._ud_eval = False
         self._setup_config(lang)
         self._config.training = False
+        # CPU lemma decode avoids per-step GPU→CPU sync; auto-enable on MPS
+        if cpu_lemma is None:
+            self._cpu_lemma = (self._config.device.type == 'mps')
+        else:
+            self._cpu_lemma = cpu_lemma
         self.added_langs = [lang]
         assert lang in lang2treebank, f'{lang} has not been supported. Currently supported languages: {list(lang2treebank.keys())}'
 
@@ -116,7 +121,7 @@ class Pipeline:
 
         self._lemma_model = {}
         treebank_name = lang2treebank[lang]
-        self._lemma_model[lang] = LemmaWrapper(self._config, treebank_name=treebank_name, use_gpu=self._use_gpu)
+        self._lemma_model[lang] = LemmaWrapper(self._config, treebank_name=treebank_name, use_gpu=self._use_gpu, cpu_lemma=self._cpu_lemma)
 
         # ner if available
         self._ner_model = {}
@@ -311,7 +316,7 @@ class Pipeline:
             self._mwt_model[lang] = MWTWrapper(self._config, treebank_name=treebank_name, use_gpu=self._use_gpu)
 
         # lemma
-        self._lemma_model[lang] = LemmaWrapper(self._config, treebank_name=treebank_name, use_gpu=self._use_gpu)
+        self._lemma_model[lang] = LemmaWrapper(self._config, treebank_name=treebank_name, use_gpu=self._use_gpu, cpu_lemma=self._cpu_lemma)
 
         # ner if available
         if lang in langwithner:

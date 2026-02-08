@@ -3,6 +3,7 @@
 
 # ── Config ──────────────────────────────────────────────────
 EMBEDDING = "xlm-roberta-base"  # or "xlm-roberta-large"
+CPU_LEMMA = False  # True = run seq2seq lemma decoder on CPU (avoids GPU sync; helps on MPS, may hurt on CUDA)
 
 # ── 1. Check CUDA ────────────────────────────────────────────
 import torch
@@ -63,10 +64,11 @@ print("=" * 70)
 torch.cuda.empty_cache()
 
 t0 = time.perf_counter()
-p = Pipeline("english", gpu=True, cache_dir="./cache", embedding=EMBEDDING)
+p = Pipeline("english", gpu=True, cache_dir="./cache", embedding=EMBEDDING, cpu_lemma=CPU_LEMMA)
 init_time = time.perf_counter() - t0
 device_type = str(p._config.device.type)
 print(f"Device: {device_type}")
+print(f"cpu_lemma: {CPU_LEMMA}")
 print(f"Init time: {init_time:.1f}s")
 print(f"VRAM: {gpu_mb():.0f}MB")
 
@@ -242,6 +244,7 @@ out = {
     "embedding": EMBEDDING,
     "commit": _commit if '_commit' in dir() else "unknown",
     "device": device_type,
+    "cpu_lemma": CPU_LEMMA,
     "gpu_name": torch.cuda.get_device_name(0),
     "vram_mb": round(gpu_mb()),
     "warmup_runs": WARMUP,

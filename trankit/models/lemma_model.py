@@ -320,17 +320,25 @@ def get_lemma_model(cache_dir, language, use_gpu, device=None):
 
 class LemmaWrapper:
     # adapted from stanza
-    def __init__(self, config, treebank_name, use_gpu, evaluate=True):
+    def __init__(self, config, treebank_name, use_gpu, cpu_lemma=False, evaluate=True):
         self.config = config
         self.treebank_name = treebank_name
         if evaluate:
             if self.treebank_name in ['UD_Old_French-SRCMF', 'UD_Vietnamese-VTB', 'UD_Vietnamese-VLSP']:
                 self.args = get_identity_lemma_model()
             else:
+                # When cpu_lemma is True, run the small seq2seq lemmatizer on
+                # CPU to avoid per-step GPU→CPU sync in greedy decode.
+                if cpu_lemma:
+                    lemma_device = torch.device('cpu')
+                    lemma_gpu = False
+                else:
+                    lemma_device = config.device
+                    lemma_gpu = use_gpu
                 self.model, self.args, self.loaded_args, self.vocab = get_lemma_model(os.path.join(self.config._cache_dir, self.config.embedding_name),
                                                                                       treebank2lang[treebank_name],
-                                                                                      use_gpu,
-                                                                                      device=config.device)
+                                                                                      use_gpu=lemma_gpu,
+                                                                                      device=lemma_device)
             print('Loading lemmatizer for {}'.format(treebank2lang[treebank_name]))
         else:
             self.get_lemma_trainer(treebank2lang[treebank_name], use_gpu)
