@@ -16,6 +16,17 @@ bench model="xlm-roberta-base":
 bench-cpu model="xlm-roberta-base":
     {{python}} trankit/tests/test_benchmark.py {{model}} --cpu
 
+# run all benchmark variants for base/large:
+# - local CPU
+# - local GPU (MPS on Mac, CUDA otherwise)
+# - T4 results are produced separately (e.g., Colab) and copied into trankit/tests manually
+bench-all:
+    set -eu
+    just bench-cpu model=xlm-roberta-base
+    just bench-cpu model=xlm-roberta-large
+    just bench model=xlm-roberta-base
+    just bench model=xlm-roberta-large
+
 # run correctness then benchmark (both gpu)
 verify: test (bench)
 
