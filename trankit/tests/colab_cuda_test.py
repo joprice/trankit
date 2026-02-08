@@ -258,7 +258,8 @@ out = {
     "results": bench_results,
 }
 
-out_path = f"benchmark_results_{EMBEDDING}_{device_type}_{gpu_name}.json"
+embedding_name = p._config.embedding_name
+out_path = f"benchmark_results_{embedding_name}_{device_type}_{gpu_name}.json"
 with open(out_path, "w") as f:
     json.dump(out, f, indent=2)
 print(f"\nResults saved to {out_path}")
