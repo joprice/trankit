@@ -510,8 +510,9 @@ class Pipeline:
             wp_pred_labels, wp_ends, para_ids = predictions[0], predictions[1], predictions[2]
             wp_pred_labels = wp_pred_labels.detach().cpu().tolist()
 
-            for i in range(len(wp_pred_labels)):
-                wordpiece_pred_labels.append(wp_pred_labels[i][: len(wp_ends[i])])
+            wordpiece_pred_labels.extend(
+                wp_labels[:len(wp_end_positions)] for wp_labels, wp_end_positions in zip(wp_pred_labels, wp_ends)
+            )
 
             wordpiece_ends.extend(wp_ends)
             paragraph_indexes.extend(para_ids)
@@ -521,8 +522,7 @@ class Pipeline:
 
         for wp_pred_ls, wp_es, p_index in zip(wordpiece_pred_labels, wordpiece_ends,
                                               paragraph_indexes):
-            para_id_to_wp_pred_labels[p_index].extend([(pred, char_position) for pred, char_position in
-                                                       zip(wp_pred_ls, wp_es)])
+            para_id_to_wp_pred_labels[p_index].extend(zip(wp_pred_ls, wp_es))
 
         # get predictions
         corpus_text = in_doc
@@ -614,7 +614,7 @@ class Pipeline:
 
         if type(input) == str and input.isspace():
             return []
-        ori_text = deepcopy(input)
+        ori_text = input
         if is_sent:
             return {TEXT: ori_text, TOKENS: self._tokenize_sent(in_sent=input), LANG: self.active_lang}
         else:
@@ -645,8 +645,9 @@ class Pipeline:
             wp_pred_labels, wp_ends, para_ids = predictions[0], predictions[1], predictions[2]
             wp_pred_labels = wp_pred_labels.detach().cpu().tolist()
 
-            for i in range(len(wp_pred_labels)):
-                wordpiece_pred_labels.append(wp_pred_labels[i][: len(wp_ends[i])])
+            wordpiece_pred_labels.extend(
+                wp_labels[:len(wp_end_positions)] for wp_labels, wp_end_positions in zip(wp_pred_labels, wp_ends)
+            )
 
             wordpiece_ends.extend(wp_ends)
             paragraph_indexes.extend(para_ids)
@@ -655,8 +656,7 @@ class Pipeline:
 
         for wp_pred_ls, wp_es, p_index in zip(wordpiece_pred_labels, wordpiece_ends,
                                               paragraph_indexes):
-            para_id_to_wp_pred_labels[p_index].extend([(pred, char_position) for pred, char_position in
-                                                       zip(wp_pred_ls, wp_es)])
+            para_id_to_wp_pred_labels[p_index].extend(zip(wp_pred_ls, wp_es))
 
         # get predictions
         corpus_text = in_sent
@@ -763,8 +763,9 @@ class Pipeline:
             wp_pred_labels, wp_ends, para_ids = predictions[0], predictions[1], predictions[2]
             wp_pred_labels = wp_pred_labels.detach().cpu().tolist()
 
-            for i in range(len(wp_pred_labels)):
-                wordpiece_pred_labels.append(wp_pred_labels[i][: len(wp_ends[i])])
+            wordpiece_pred_labels.extend(
+                wp_labels[:len(wp_end_positions)] for wp_labels, wp_end_positions in zip(wp_pred_labels, wp_ends)
+            )
 
             wordpiece_ends.extend(wp_ends)
             paragraph_indexes.extend(para_ids)
@@ -773,8 +774,7 @@ class Pipeline:
 
         for wp_pred_ls, wp_es, p_index in zip(wordpiece_pred_labels, wordpiece_ends,
                                               paragraph_indexes):
-            para_id_to_wp_pred_labels[p_index].extend([(pred, char_position) for pred, char_position in
-                                                       zip(wp_pred_ls, wp_es)])
+            para_id_to_wp_pred_labels[p_index].extend(zip(wp_pred_ls, wp_es))
 
         # get predictions
         corpus_text = in_doc
@@ -883,7 +883,7 @@ class Pipeline:
                 # switch to detected lang if auto mode is on
                 if self.auto_mode:
                     self._detect_lang_and_switch(text=input)
-                ori_text = deepcopy(input)
+                ori_text = input
                 return {TEXT: ori_text, TOKENS: self._posdep_sent(in_sent=input), LANG: self.active_lang}
 
         else:
@@ -903,7 +903,7 @@ class Pipeline:
                 if self.auto_mode:
                     self._detect_lang_and_switch(text=input)
 
-                ori_text = deepcopy(input)
+                ori_text = input
                 return {TEXT: ori_text, SENTENCES: self._posdep_doc(in_doc=input), LANG: self.active_lang}
 
     def _posdep_sent(self, in_sent):  # assuming input is a sentence
@@ -1081,7 +1081,7 @@ class Pipeline:
                 if self.auto_mode:
                     self._detect_lang_and_switch(text=input)
 
-                ori_text = deepcopy(input)
+                ori_text = input
                 return {TEXT: ori_text, TOKENS: self._lemmatize_sent(in_sent=input, obmit_tag=True), LANG: self.active_lang}
 
         else:
@@ -1101,7 +1101,7 @@ class Pipeline:
                 if self.auto_mode:
                     self._detect_lang_and_switch(text=input)
 
-                ori_text = deepcopy(input)
+                ori_text = input
                 return {TEXT: ori_text, SENTENCES: self._lemmatize_doc(in_doc=input, obmit_tag=True), LANG: self.active_lang}
 
     def _lemmatize_sent(self, in_sent, obmit_tag=False, skip_dict_seq2seq=None):
@@ -1152,7 +1152,7 @@ class Pipeline:
 
                 assert self.active_lang in langwithner, 'NER module is not available for "{}"'.format(self.active_lang)
 
-                ori_text = deepcopy(input)
+                ori_text = input
                 return {TEXT: ori_text, TOKENS: self._ner_sent(in_sent=input), LANG: self.active_lang}
 
         else:
@@ -1176,7 +1176,7 @@ class Pipeline:
 
                 assert self.active_lang in langwithner, 'NER module is not available for "{}"'.format(self.active_lang)
 
-                ori_text = deepcopy(input)
+                ori_text = input
                 return {TEXT: ori_text, SENTENCES: self._ner_doc(in_doc=input), LANG: self.active_lang}
 
     def _ner_sent(self, in_sent):  # assuming input is a document
@@ -1260,6 +1260,15 @@ class Pipeline:
 
         return dner_doc
 
+    def batch(self, docs, skip_dict_seq2seq=None):
+        """Process multiple documents with stage-level batching for higher throughput.
+
+        All documents must be in the pipeline's current active language.
+        Returns a list of result dicts, same format as calling pipeline(text).
+        """
+        from .batch_pipeline import batch_process
+        return batch_process(self, docs, skip_dict_seq2seq=skip_dict_seq2seq)
+
     def __call__(self, input, is_sent=False, skip_dict_seq2seq=None):
         if is_sent:
             assert is_string(input) or is_list_strings(
@@ -1281,7 +1290,7 @@ class Pipeline:
                 if self.auto_mode:
                     self._detect_lang_and_switch(text=input)
 
-                ori_text = deepcopy(input)
+                ori_text = input
                 # Inline tagger flow so we can reuse the dataset for NER
                 tokenized_sent = self._tokenize_sent(input)
                 posdep_sent = [{ID: 1, TOKENS: tokenized_sent}]
@@ -1400,7 +1409,7 @@ class Pipeline:
                 if self.auto_mode:
                     self._detect_lang_and_switch(text=input)
 
-                ori_text = deepcopy(input)
+                ori_text = input
                 # Inline tagger flow so we can reuse the dataset for NER
                 in_doc = self._tokenize_doc(in_doc=input)
                 config = self._config

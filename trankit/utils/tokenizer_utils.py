@@ -1,5 +1,4 @@
 from .base_utils import *
-from copy import deepcopy
 from .tokenizer_batching import batched_tokenize_pseudo_tokens
 
 NEWLINE_WHITESPACE_RE = re.compile(r'\n\s*\n')
@@ -56,7 +55,7 @@ def get_startchar(word, text):
 
 
 def get_character_locations(string_units, text):
-    tmp_text = deepcopy(text)
+    tmp_text = text
     offset = 0
     end_positions = []
     for str_unit in string_units:
@@ -168,7 +167,7 @@ def split_to_sentences(paragraph_text, charlabels):
 
         if charlabels[k] == '2' or charlabels[k] == '4':
             end = k  # (start, end) local position in REFURBISHED paragraph (REFURBISHED means the \newline characters are removed from a paragraph text
-            sentences.append((deepcopy(sent_text), deepcopy(sent_labels), start, end))
+            sentences.append((sent_text, sent_labels, start, end))
             start = end + 1
             sent_text = ''
             sent_labels = ''
@@ -177,7 +176,7 @@ def split_to_sentences(paragraph_text, charlabels):
         # a paragraph not always ends with a 2 or 4 label
         if not (len(sent_text) == 0 and len(sent_labels) == 0):
             sentences.append(
-                (deepcopy(sent_text), deepcopy(sent_labels), start, len(paragraph_text) - 1))
+                (sent_text, sent_labels, start, len(paragraph_text) - 1))
     else:
         sentences = [(paragraph_text, charlabels, 0, len(paragraph_text) - 1)]
     return sentences
@@ -252,18 +251,18 @@ def charlevel_format_to_wordpiece_format(wordpiece_splitter, max_input_length, p
                     if wpid in end_piece_ids:
                         takeout_position = tmp_id + 1
                 num_extra_wordpieces = takeout_position
-                new_example[0] += deepcopy(example[0][: num_extra_wordpieces])
-                new_example[1] += deepcopy(example[1][: num_extra_wordpieces])
-                new_example[2] += deepcopy(example[2][: num_extra_wordpieces])
+                new_example[0] += example[0][: num_extra_wordpieces]
+                new_example[1] += example[1][: num_extra_wordpieces]
+                new_example[2] += example[2][: num_extra_wordpieces]
                 wordpiece_examples.append(
                     ([wp for wp, wpid in new_example[0]], new_example[1], new_example[2],
                      paragraph_index))
                 # start new example
                 new_example = [[], [], []]
 
-            new_example[0] += deepcopy(example[0])
-            new_example[1] += deepcopy(example[1])
-            new_example[2] += deepcopy(example[2])
+            new_example[0] += example[0]
+            new_example[1] += example[1]
+            new_example[2] += example[2]
         if len(new_example[0]) > 0:
             wordpiece_examples.append(
                 ([wp for wp, wpid in new_example[0]], new_example[1], new_example[2], paragraph_index))

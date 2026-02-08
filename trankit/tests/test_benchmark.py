@@ -254,7 +254,8 @@ def run_benchmarks(embedding, gpu=True, profile_path=None, cache_adapters=True):
 def run_throughput_benchmark(embedding, gpu=True, cache_adapters=True,
                              num_docs=1000, target_words=300,
                              task="full", langs=None,
-                             warmup=5, profile_path=None):
+                             warmup=5, profile_path=None,
+                             batch_size=None):
     profiler = None
     if profile_path is not None:
         if profile_path == "":
@@ -271,6 +272,8 @@ def run_throughput_benchmark(embedding, gpu=True, cache_adapters=True,
     print(f"Trankit Throughput Benchmark")
     print(f"Embedding: {embedding} | cache_adapters: {cache_adapters}")
     print(f"Task: {task} pipeline | Documents: {num_docs} | ~{target_words} words/doc")
+    if batch_size:
+        print(f"Batch size: {batch_size} (stage-level batching)")
     if len(lang_list) > 1:
         print(f"Languages: {', '.join(lang_list)} (round-robin)")
     else:
@@ -296,8 +299,16 @@ def run_throughput_benchmark(embedding, gpu=True, cache_adapters=True,
 
     # 4. Build doc schedule: [(text, lang), ...]
     schedule = [(doc_text, lang_list[i % len(lang_list)]) for i in range(num_docs)]
+    multi_lang = len(lang_list) > 1
 
     # 5. Map task string to callable
+    use_batch = batch_size is not None and task == "full" and not multi_lang
+    if batch_size and not use_batch:
+        if task != "full":
+            print(f"WARNING: --batch only works with --task=full, ignoring batch_size={batch_size}")
+        if multi_lang:
+            print(f"WARNING: --batch only works with single language, ignoring batch_size={batch_size}")
+
     task_fns = {
         "full": lambda text: p(text),
         "tokenize": lambda text: p.tokenize(text),
@@ -309,7 +320,6 @@ def run_throughput_benchmark(embedding, gpu=True, cache_adapters=True,
         print(f"Unknown task: {task}. Valid: {', '.join(task_fns)}")
         sys.exit(1)
     base_fn = task_fns[task]
-    multi_lang = len(lang_list) > 1
 
     def run_doc(text, lang):
         if multi_lang:
@@ -323,7 +333,11 @@ def run_throughput_benchmark(embedding, gpu=True, cache_adapters=True,
     with torch.inference_mode():
         for lang in lang_list:
             for _ in range(warmup):
-                result = run_doc(doc_text, lang)
+                if use_batch:
+                    results = p.batch([doc_text])
+                    result = results[0]
+                else:
+                    result = run_doc(doc_text, lang)
         # Count from last warmup result
         num_tokens = count_tokens(result)
         num_sentences = count_sentences(result)
@@ -337,12 +351,27 @@ def run_throughput_benchmark(embedding, gpu=True, cache_adapters=True,
     with torch.inference_mode():
         if profiler is not None:
             profiler.enable()
-        for text, lang in schedule:
-            start = time.perf_counter()
-            run_doc(text, lang)
-            elapsed = time.perf_counter() - start
-            times.append(elapsed)
-            per_lang_times[lang].append(elapsed)
+
+        if use_batch:
+            # Stage-level batching: process batch_size docs at a time
+            all_docs = [text for text, lang in schedule]
+            for i in range(0, len(all_docs), batch_size):
+                chunk = all_docs[i:i + batch_size]
+                start = time.perf_counter()
+                p.batch(chunk)
+                elapsed = time.perf_counter() - start
+                per_doc = elapsed / len(chunk)
+                for _ in chunk:
+                    times.append(per_doc)
+                    per_lang_times[first_lang].append(per_doc)
+        else:
+            for text, lang in schedule:
+                start = time.perf_counter()
+                run_doc(text, lang)
+                elapsed = time.perf_counter() - start
+                times.append(elapsed)
+                per_lang_times[lang].append(elapsed)
+
         if profiler is not None:
             profiler.disable()
 
@@ -438,11 +467,13 @@ if __name__ == "__main__":
         langs_str = _get_flag_value(flags, "langs", None)
         langs = langs_str.split(",") if langs_str else None
         warmup = int(_get_flag_value(flags, "warmup", "5"))
+        batch_str = _get_flag_value(flags, "batch", None)
+        batch_size = int(batch_str) if batch_str else None
         run_throughput_benchmark(
             embedding, gpu=gpu, cache_adapters=cache_adapters,
             num_docs=num_docs, target_words=target_words,
             task=task, langs=langs, warmup=warmup,
-            profile_path=profile_path,
+            profile_path=profile_path, batch_size=batch_size,
         )
     else:
         run_benchmarks(embedding, gpu=gpu, profile_path=profile_path, cache_adapters=cache_adapters)

@@ -23,13 +23,42 @@ print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f}GB
 !pip install --no-cache-dir -q --no-deps --force-reinstall git+https://github.com/joprice/trankit.git@adapter-caching
 !pip install --no-cache-dir -q adapters psutil langid filelock tqdm requests protobuf sentencepiece sacremoses regex packaging
 
-# ── 3. Setup ─────────────────────────────────────────────────
+# ── 3. Setup (suppress warnings, tee output to file) ─────────
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", message=".*adapters available but none.*")
+
+import logging
+logging.getLogger("adapters").setLevel(logging.ERROR)
+
+import io
 import math
+import os
+import sys
 import time
 import statistics
 import json
 import subprocess
 import threading
+
+# Tee: write to both stdout and a report file
+REPORT_PATH = "gpu_utilization_report.txt"
+
+class Tee:
+    def __init__(self, file, stream):
+        self.file = file
+        self.stream = stream
+    def write(self, data):
+        self.stream.write(data)
+        self.file.write(data)
+    def flush(self):
+        self.stream.flush()
+        self.file.flush()
+
+_report_file = open(REPORT_PATH, "w")
+_orig_stdout = sys.stdout
+sys.stdout = Tee(_report_file, _orig_stdout)
+
 from trankit import Pipeline
 
 _PARAGRAPH = (
@@ -93,7 +122,7 @@ class GpuMonitor:
                 })
             except Exception:
                 pass
-            self._stop.wait(0.5)  # sample at 2Hz for finer granularity
+            self._stop.wait(0.5)  # sample at 2Hz
 
     def summary(self):
         if not self.samples:
@@ -112,7 +141,6 @@ class GpuMonitor:
 
 def run_test(label, fn, doc_text, num_docs):
     """Run fn(doc_text) num_docs times, return timing + GPU stats."""
-    # warmup
     with torch.inference_mode():
         for _ in range(WARMUP):
             result = fn(doc_text)
@@ -152,9 +180,9 @@ def run_test(label, fn, doc_text, num_docs):
 
 
 # ── 4. Initialize ────────────────────────────────────────────
-print("\n" + "=" * 70)
+print(f"\n{'=' * 70}")
 print(f"GPU Utilization Diagnostic — {EMBEDDING}")
-print("=" * 70)
+print(f"{'=' * 70}")
 
 torch.cuda.empty_cache()
 p = Pipeline("english", gpu=True, cache_dir="./cache", embedding=EMBEDDING, cache_adapters=CACHE_ADAPTERS)
@@ -203,7 +231,6 @@ print("-" * 70)
 for target_words in [50, 150, 300, 600, 1200, 2400]:
     doc = make_document(target_words)
     actual_words = len(doc.split())
-    # fewer docs for larger sizes to keep total time reasonable
     n = max(10, DOCS_PER_TEST * 300 // target_words)
     r = run_test(f"full:{target_words}w", p, doc, n)
     all_results.append(r)
@@ -232,34 +259,42 @@ for target_words in [50, 150, 300, 600, 1200, 2400]:
           f"{r['docs_per_sec']:>7.1f} {r['tokens_per_sec']:>8.0f} "
           f"{r['mean_ms']:>7.0f}ms {r['gpu_mean_pct']:>5.0f}% {r['gpu_max_pct']:>7.0f}%")
 
-# ── Save ─────────────────────────────────────────────────────
-gpu_name = torch.cuda.get_device_name(0).replace(" ", "-")
-out_path = f"gpu_utilization_diagnostic_{EMBEDDING.replace('/', '-')}_{gpu_name}.json"
-with open(out_path, "w") as f:
-    json.dump({"embedding": EMBEDDING, "gpu": torch.cuda.get_device_name(0), "results": all_results}, f, indent=2)
-print(f"\nResults saved to {out_path}")
-
-try:
-    from google.colab import files
-    files.download(out_path)
-except ImportError:
-    pass
-
+# ── Interpretation ───────────────────────────────────────────
 print(f"\n{'=' * 70}")
 print("INTERPRETATION GUIDE")
 print("=" * 70)
 print("""
 If GPU% goes UP with larger docs:
-  → GPU is starved for work. Batching multiple docs per call would help.
+  -> GPU is starved for work. Batching multiple docs per call would help.
 
 If GPU% stays LOW even with large docs:
-  → CPU-side overhead (Python, data prep) is the bottleneck.
-  → Need to overlap CPU prep with GPU compute (async pipeline).
+  -> CPU-side overhead (Python, data prep) is the bottleneck.
+  -> Need to overlap CPU prep with GPU compute (async pipeline).
 
 If individual tasks show higher GPU% than full pipeline:
-  → The dead time is between tasks (result unpacking, re-encoding).
-  → Fusing tasks or pipelining stages would help.
+  -> The dead time is between tasks (result unpacking, re-encoding).
+  -> Fusing tasks or pipelining stages would help.
 
 If tokenize alone saturates GPU:
-  → The XLM-R forward pass is efficient; overhead is in task heads.
+  -> The XLM-R forward pass is efficient; overhead is in task heads.
 """)
+
+# ── Save JSON + report ───────────────────────────────────────
+gpu_name = torch.cuda.get_device_name(0).replace(" ", "-")
+json_path = f"gpu_utilization_diagnostic_{EMBEDDING.replace('/', '-')}_{gpu_name}.json"
+with open(json_path, "w") as f:
+    json.dump({"embedding": EMBEDDING, "gpu": torch.cuda.get_device_name(0), "results": all_results}, f, indent=2)
+print(f"\nJSON saved to {json_path}")
+
+# Close report file
+sys.stdout = _orig_stdout
+_report_file.close()
+print(f"Report saved to {REPORT_PATH}")
+
+# Download both files in Colab
+try:
+    from google.colab import files
+    files.download(REPORT_PATH)
+    files.download(json_path)
+except ImportError:
+    pass

@@ -33,13 +33,41 @@ else:
     _commit = "unknown"
     print("WARNING: could not determine installed commit")
 
-# ── 3. Setup ─────────────────────────────────────────────────
+# ── 3. Setup (suppress warnings, tee output to file) ─────────
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", message=".*adapters available but none.*")
+
+import logging
+logging.getLogger("adapters").setLevel(logging.ERROR)
+
+import io
 import math
+import os
+import sys
 import time
 import statistics
 import json
 import subprocess
 import threading
+
+REPORT_PATH = "throughput_report.txt"
+
+class Tee:
+    def __init__(self, file, stream):
+        self.file = file
+        self.stream = stream
+    def write(self, data):
+        self.stream.write(data)
+        self.file.write(data)
+    def flush(self):
+        self.stream.flush()
+        self.file.flush()
+
+_report_file = open(REPORT_PATH, "w")
+_orig_stdout = sys.stdout
+sys.stdout = Tee(_report_file, _orig_stdout)
+
 from trankit import Pipeline
 
 _PARAGRAPH = (
@@ -287,13 +315,7 @@ with open(out_path, "w") as f:
         f,
         indent=2,
     )
-print(f"\nResults saved to {out_path}")
-
-try:
-    from google.colab import files
-    files.download(out_path)
-except ImportError:
-    pass
+print(f"\nJSON saved to {out_path}")
 
 # ── 10. Summary ──────────────────────────────────────────────
 print("\n" + "=" * 70)
@@ -309,3 +331,15 @@ if gpu_stats:
     print(f"GPU util: {gpu_stats['gpu_util_mean_pct']}% mean")
     print(f"VRAM headroom: {headroom}MB free of {gpu_stats['vram_total_mb']}MB")
 print("=" * 70)
+
+# Close report file and download
+sys.stdout = _orig_stdout
+_report_file.close()
+print(f"Report saved to {REPORT_PATH}")
+
+try:
+    from google.colab import files
+    files.download(REPORT_PATH)
+    files.download(out_path)
+except ImportError:
+    pass
