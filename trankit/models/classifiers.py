@@ -86,6 +86,8 @@ class PosDepClassifier(nn.Module):
         # loss function
         self.criteria = torch.nn.CrossEntropyLoss()
 
+        self._eye_cache = {}
+
         if not config.training:
             # load pretrained weights
             self.initialized_weights = self.state_dict()
@@ -100,6 +102,11 @@ class PosDepClassifier(nn.Module):
                     self.initialized_weights[name] = value
             self.load_state_dict(self.initialized_weights)
             print('Loading tagger for {}'.format(language))
+
+    def _get_diag(self, size):
+        if size not in self._eye_cache:
+            self._eye_cache[size] = torch.eye(size, dtype=torch.bool, device=self.config.device).unsqueeze(0)
+        return self._eye_cache[size]
 
     def forward(self, batch, word_reprs, cls_reprs):
         # upos
@@ -127,10 +134,10 @@ class PosDepClassifier(nn.Module):
         dep_reprs = self.down_project(dep_reprs)
         unlabeled_scores = self.unlabeled(dep_reprs, dep_reprs).squeeze(3)
 
-        diag = torch.eye(batch.head_idxs.size(-1) + 1, dtype=torch.bool).to(self.config.device).unsqueeze(0)
+        diag = self._get_diag(batch.head_idxs.size(-1) + 1)
         unlabeled_scores.masked_fill_(diag, -float('inf'))
 
-        unlabeled_scores = unlabeled_scores[:, 1:, :]  
+        unlabeled_scores = unlabeled_scores[:, 1:, :]
         unlabeled_scores = unlabeled_scores.masked_fill(batch.word_mask.unsqueeze(1), -float('inf'))
         unlabeled_target = batch.head_idxs.masked_fill(batch.word_mask[:, 1:], -100)
         loss += self.criteria(unlabeled_scores.contiguous().view(-1, unlabeled_scores.size(2)),
@@ -169,7 +176,7 @@ class PosDepClassifier(nn.Module):
         dep_reprs = self.down_project(dep_reprs)
         unlabeled_scores = self.unlabeled(dep_reprs, dep_reprs).squeeze(3)
 
-        diag = torch.eye(batch.head_idxs.size(-1) + 1, dtype=torch.bool).unsqueeze(0).to(self.config.device)
+        diag = self._get_diag(batch.head_idxs.size(-1) + 1)
         unlabeled_scores.masked_fill_(diag, -float('inf'))
 
         # deprel

@@ -822,6 +822,7 @@ class Pipeline:
         if self._config.embedding_name == 'xlm-roberta-large':
             eval_batch_size = int(eval_batch_size / 3)
 
+        itos = self._config.itos[self._config.active_lang]
         for batch in DataLoader(test_set,
                                 batch_size=eval_batch_size,
                                 shuffle=False, collate_fn=test_set.collate_fn):
@@ -843,7 +844,7 @@ class Pipeline:
             head_seqs = [chuliu_edmonds_one_root(adj[:l, :l])[1:] for adj, l in
                          zip(predicted_dep[0], sentlens)]  # remove attachment for the root
             deprel_seqs = [
-                [self._config.itos[self._config.active_lang][DEPREL][predicted_dep[1][i][j + 1][h]] for j, h in
+                [itos[DEPREL][predicted_dep[1][i][j + 1][h]] for j, h in
                  enumerate(hs)] for
                 i, hs
                 in
@@ -858,28 +859,21 @@ class Pipeline:
                     wordid = batch.word_ids[bid][i]
 
                     # upos
-                    pred_upos_id = predicted_upos[bid][i]
-                    upos_name = self._config.itos[self._config.active_lang][UPOS][pred_upos_id]
-                    test_set.conllu_doc[sentid][wordid][UPOS] = upos_name
+                    test_set.conllu_doc[sentid][wordid][UPOS] = itos[UPOS][predicted_upos[bid][i]]
                     # xpos
-                    pred_xpos_id = predicted_xpos[bid][i]
-                    xpos_name = self._config.itos[self._config.active_lang][XPOS][pred_xpos_id]
-                    test_set.conllu_doc[sentid][wordid][XPOS] = xpos_name
+                    test_set.conllu_doc[sentid][wordid][XPOS] = itos[XPOS][predicted_xpos[bid][i]]
                     # feats
-                    pred_feats_id = predicted_feats[bid][i]
-                    feats_name = self._config.itos[self._config.active_lang][FEATS][pred_feats_id]
-                    test_set.conllu_doc[sentid][wordid][FEATS] = feats_name
-
+                    test_set.conllu_doc[sentid][wordid][FEATS] = itos[FEATS][predicted_feats[bid][i]]
                     # head
                     test_set.conllu_doc[sentid][wordid][HEAD] = int(pred_tokens[bid][i][0])
                     # deprel
                     test_set.conllu_doc[sentid][wordid][DEPREL] = pred_tokens[bid][i][1]
 
             del predictions
-            del sentlens 
-            del head_seqs 
-            del deprel_seqs 
-            del pred_tokens 
+            del sentlens
+            del head_seqs
+            del deprel_seqs
+            del pred_tokens
 
 
 
@@ -908,6 +902,7 @@ class Pipeline:
         if self._config.embedding_name == 'xlm-roberta-large':
             eval_batch_size = int(eval_batch_size / 3)
 
+        itos = self._config.itos[self._config.active_lang]
         for batch in DataLoader(test_set,
                                 batch_size=eval_batch_size,
                                 shuffle=False, collate_fn=test_set.collate_fn):
@@ -929,7 +924,7 @@ class Pipeline:
             head_seqs = [chuliu_edmonds_one_root(adj[:l, :l])[1:] for adj, l in
                          zip(predicted_dep[0], sentlens)]  # remove attachment for the root
             deprel_seqs = [
-                [self._config.itos[self._config.active_lang][DEPREL][predicted_dep[1][i][j + 1][h]] for j, h in
+                [itos[DEPREL][predicted_dep[1][i][j + 1][h]] for j, h in
                  enumerate(hs)] for
                 i, hs
                 in
@@ -944,28 +939,21 @@ class Pipeline:
                     wordid = batch.word_ids[bid][i]
 
                     # upos
-                    pred_upos_id = predicted_upos[bid][i]
-                    upos_name = self._config.itos[self._config.active_lang][UPOS][pred_upos_id]
-                    test_set.conllu_doc[sentid][wordid][UPOS] = upos_name
+                    test_set.conllu_doc[sentid][wordid][UPOS] = itos[UPOS][predicted_upos[bid][i]]
                     # xpos
-                    pred_xpos_id = predicted_xpos[bid][i]
-                    xpos_name = self._config.itos[self._config.active_lang][XPOS][pred_xpos_id]
-                    test_set.conllu_doc[sentid][wordid][XPOS] = xpos_name
+                    test_set.conllu_doc[sentid][wordid][XPOS] = itos[XPOS][predicted_xpos[bid][i]]
                     # feats
-                    pred_feats_id = predicted_feats[bid][i]
-                    feats_name = self._config.itos[self._config.active_lang][FEATS][pred_feats_id]
-                    test_set.conllu_doc[sentid][wordid][FEATS] = feats_name
-
+                    test_set.conllu_doc[sentid][wordid][FEATS] = itos[FEATS][predicted_feats[bid][i]]
                     # head
                     test_set.conllu_doc[sentid][wordid][HEAD] = int(pred_tokens[bid][i][0])
                     # deprel
                     test_set.conllu_doc[sentid][wordid][DEPREL] = pred_tokens[bid][i][1]
 
             del predictions
-            del sentlens 
-            del head_seqs 
-            del deprel_seqs 
-            del pred_tokens 
+            del sentlens
+            del head_seqs
+            del deprel_seqs
+            del pred_tokens
 
 
         tagged_doc = get_output_doc(dposdep_doc, test_set.conllu_doc)
@@ -1204,6 +1192,7 @@ class Pipeline:
                 if self._config.embedding_name == 'xlm-roberta-large':
                     eval_batch_size = int(eval_batch_size / 3)
 
+                itos = self._config.itos[self._config.active_lang]
                 for batch in DataLoader(tagger_test_set,
                                         batch_size=eval_batch_size,
                                         shuffle=False, collate_fn=tagger_test_set.collate_fn):
@@ -1220,7 +1209,7 @@ class Pipeline:
                     head_seqs = [chuliu_edmonds_one_root(adj[:l, :l])[1:] for adj, l in
                                  zip(predicted_dep[0], sentlens)]
                     deprel_seqs = [
-                        [self._config.itos[self._config.active_lang][DEPREL][predicted_dep[1][i][j + 1][h]] for j, h in
+                        [itos[DEPREL][predicted_dep[1][i][j + 1][h]] for j, h in
                          enumerate(hs)] for i, hs in enumerate(head_seqs)]
 
                     pred_tokens = [[[head_seqs[i][j], deprel_seqs[i][j]] for j in range(sentlens[i] - 1)] for i in
@@ -1230,9 +1219,9 @@ class Pipeline:
                         sentid = batch.sent_index[bid]
                         for i in range(batch.word_num[bid]):
                             wordid = batch.word_ids[bid][i]
-                            tagger_test_set.conllu_doc[sentid][wordid][UPOS] = self._config.itos[self._config.active_lang][UPOS][predicted_upos[bid][i]]
-                            tagger_test_set.conllu_doc[sentid][wordid][XPOS] = self._config.itos[self._config.active_lang][XPOS][predicted_xpos[bid][i]]
-                            tagger_test_set.conllu_doc[sentid][wordid][FEATS] = self._config.itos[self._config.active_lang][FEATS][predicted_feats[bid][i]]
+                            tagger_test_set.conllu_doc[sentid][wordid][UPOS] = itos[UPOS][predicted_upos[bid][i]]
+                            tagger_test_set.conllu_doc[sentid][wordid][XPOS] = itos[XPOS][predicted_xpos[bid][i]]
+                            tagger_test_set.conllu_doc[sentid][wordid][FEATS] = itos[FEATS][predicted_feats[bid][i]]
                             tagger_test_set.conllu_doc[sentid][wordid][HEAD] = int(pred_tokens[bid][i][0])
                             tagger_test_set.conllu_doc[sentid][wordid][DEPREL] = pred_tokens[bid][i][1]
 
@@ -1314,6 +1303,7 @@ class Pipeline:
                 if self._config.embedding_name == 'xlm-roberta-large':
                     eval_batch_size = int(eval_batch_size / 3)
 
+                itos = self._config.itos[self._config.active_lang]
                 for batch in DataLoader(tagger_test_set,
                                         batch_size=eval_batch_size,
                                         shuffle=False, collate_fn=tagger_test_set.collate_fn):
@@ -1330,7 +1320,7 @@ class Pipeline:
                     head_seqs = [chuliu_edmonds_one_root(adj[:l, :l])[1:] for adj, l in
                                  zip(predicted_dep[0], sentlens)]
                     deprel_seqs = [
-                        [self._config.itos[self._config.active_lang][DEPREL][predicted_dep[1][i][j + 1][h]] for j, h in
+                        [itos[DEPREL][predicted_dep[1][i][j + 1][h]] for j, h in
                          enumerate(hs)] for i, hs in enumerate(head_seqs)]
 
                     pred_tokens = [[[head_seqs[i][j], deprel_seqs[i][j]] for j in range(sentlens[i] - 1)] for i in
@@ -1340,9 +1330,9 @@ class Pipeline:
                         sentid = batch.sent_index[bid]
                         for i in range(batch.word_num[bid]):
                             wordid = batch.word_ids[bid][i]
-                            tagger_test_set.conllu_doc[sentid][wordid][UPOS] = self._config.itos[self._config.active_lang][UPOS][predicted_upos[bid][i]]
-                            tagger_test_set.conllu_doc[sentid][wordid][XPOS] = self._config.itos[self._config.active_lang][XPOS][predicted_xpos[bid][i]]
-                            tagger_test_set.conllu_doc[sentid][wordid][FEATS] = self._config.itos[self._config.active_lang][FEATS][predicted_feats[bid][i]]
+                            tagger_test_set.conllu_doc[sentid][wordid][UPOS] = itos[UPOS][predicted_upos[bid][i]]
+                            tagger_test_set.conllu_doc[sentid][wordid][XPOS] = itos[XPOS][predicted_xpos[bid][i]]
+                            tagger_test_set.conllu_doc[sentid][wordid][FEATS] = itos[FEATS][predicted_feats[bid][i]]
                             tagger_test_set.conllu_doc[sentid][wordid][HEAD] = int(pred_tokens[bid][i][0])
                             tagger_test_set.conllu_doc[sentid][wordid][DEPREL] = pred_tokens[bid][i][1]
 

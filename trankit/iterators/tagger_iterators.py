@@ -230,7 +230,7 @@ class TaggerDatasetLive(Dataset):
             feats_type_idxs=batch_feats_type_idxs,
             upos_ids=batch_upos_ids,
             xpos_ids=batch_xpos_ids,
-            feats_ids=batch_xpos_ids,
+            feats_ids=batch_feats_ids,
             head_idxs=batch_head_ids,
             deprel_idxs=batch_deprel_ids,
             word_mask=batch_word_mask
@@ -423,7 +423,7 @@ class TaggerDataset(Dataset):
             feats_type_idxs=batch_feats_type_idxs,
             upos_ids=batch_upos_ids,
             xpos_ids=batch_xpos_ids,
-            feats_ids=batch_xpos_ids,
+            feats_ids=batch_feats_ids,
             head_idxs=batch_head_ids,
             deprel_idxs=batch_deprel_ids,
             word_mask=batch_word_mask
