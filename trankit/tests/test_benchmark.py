@@ -13,6 +13,8 @@ import cProfile
 import inspect
 import math
 import os
+import platform
+import subprocess
 import sys
 import time
 import statistics
@@ -178,6 +180,45 @@ def format_row(r):
     )
 
 
+def _get_git_sha():
+    """Best-effort current git commit SHA for reproducibility."""
+    try:
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        return subprocess.check_output(
+            ["git", "-C", root, "rev-parse", "HEAD"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+    except Exception:
+        return None
+
+
+def _runtime_metadata(embedding, gpu, cache_adapters, mode, extra=None):
+    """Capture run metadata used to compare benchmarks reliably."""
+    metadata = {
+        "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "git_sha": _get_git_sha(),
+        "mode": mode,
+        "embedding": embedding,
+        "gpu_requested": gpu,
+        "cache_adapters": cache_adapters,
+        "python_version": sys.version.split()[0],
+        "platform": platform.platform(),
+        "torch_version": torch.__version__,
+        "cuda_available": torch.cuda.is_available(),
+        "cuda_version": torch.version.cuda,
+        "mps_available": hasattr(torch.backends, "mps") and torch.backends.mps.is_available(),
+    }
+    if torch.cuda.is_available():
+        try:
+            metadata["cuda_device_name"] = torch.cuda.get_device_name(0)
+        except Exception:
+            metadata["cuda_device_name"] = None
+    if extra:
+        metadata.update(extra)
+    return metadata
+
+
 def run_benchmarks(embedding, gpu=True, profile_path=None, cache_adapters=True):
     profiler = None
     if profile_path is not None:
@@ -244,6 +285,17 @@ def run_benchmarks(embedding, gpu=True, profile_path=None, cache_adapters=True):
     with open(out_path, "w") as f:
         json.dump(
             {
+                "metadata": _runtime_metadata(
+                    embedding=embedding,
+                    gpu=gpu,
+                    cache_adapters=cache_adapters,
+                    mode="micro",
+                    extra={
+                        "profile_path": profile_path,
+                        "warmup_runs": WARMUP_RUNS,
+                        "benchmark_runs": BENCHMARK_RUNS,
+                    },
+                ),
                 "embedding": embedding,
                 "device": device_type,
                 "warmup_runs": WARMUP_RUNS,
@@ -423,6 +475,21 @@ def run_throughput_benchmark(embedding, gpu=True, cache_adapters=True,
     with open(out_path, "w") as f:
         json.dump(
             {
+                "metadata": _runtime_metadata(
+                    embedding=embedding,
+                    gpu=gpu,
+                    cache_adapters=cache_adapters,
+                    mode="throughput",
+                    extra={
+                        "profile_path": profile_path,
+                        "task": task,
+                        "num_docs": num_docs,
+                        "target_words": target_words,
+                        "warmup_per_lang": warmup,
+                        "langs": lang_list,
+                        "batch_size": batch_size,
+                    },
+                ),
                 "embedding": embedding,
                 "device": device_type,
                 "cache_adapters": cache_adapters,
