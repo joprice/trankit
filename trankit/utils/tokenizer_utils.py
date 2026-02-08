@@ -1,7 +1,11 @@
+import os
+
 from .base_utils import *
 from .tokenizer_batching import batched_tokenize_pseudo_tokens
 
 NEWLINE_WHITESPACE_RE = re.compile(r'\n\s*\n')
+
+_fastpath_fallback_count = 0
 NUMERIC_RE = re.compile(r'^([\d]+[,\.]*)+$')
 WHITESPACE_RE = re.compile(r'\s')
 PARAGRAPH_BREAK = re.compile(r'\n\s*\n')
@@ -103,8 +107,46 @@ def get_mapping_wp_character_to_or_character(wordpiece_splitter, wp_single_strin
     return wp_char_to_or_char
 
 
+def _compute_wordpiece_mapping_fast(pseudo_tokens, group_pieces, sent_labels, character_locations,
+                                    sent_position_in_paragraph):
+    """Compute wordpiece labels and ends directly from pseudo-token structure.
+
+    Returns (flat_wordpiece_labels, flat_wordpiece_ends) on success, or None on any
+    invariant failure (index OOB, length mismatch), signaling caller to fall back.
+    """
+    try:
+        flat_wordpiece_labels = []
+        flat_wordpiece_ends = []
+        # Track position in single_original_string (sent_text with whitespace stripped)
+        orig_offset = 0
+        for pt_idx, (pseudo_token, pieces) in enumerate(zip(pseudo_tokens, group_pieces)):
+            stripped_pt = pseudo_token.strip()
+            if not pieces:
+                orig_offset += len(stripped_pt)
+                continue
+            # Each piece covers a substring of stripped_pt
+            piece_offset = 0
+            for piece in pieces:
+                if piece.startswith('▁'):
+                    str_form = piece[1:]
+                else:
+                    str_form = piece
+                end_char_in_piece = piece_offset + len(str_form) - 1
+                end_char_in_orig = orig_offset + end_char_in_piece
+                location_in_sentence = character_locations[end_char_in_orig]
+                wp_label = int(sent_labels[location_in_sentence])
+                wp_end = sent_position_in_paragraph + location_in_sentence
+                flat_wordpiece_labels.append(wp_label)
+                flat_wordpiece_ends.append(wp_end)
+                piece_offset += len(str_form)
+            orig_offset += len(stripped_pt)
+        return flat_wordpiece_labels, flat_wordpiece_ends
+    except (IndexError, KeyError):
+        return None
+
+
 def wordpiece_tokenize_from_raw_text(wordpiece_splitter, sent_text, sent_labels, sent_position_in_paragraph,
-                                     treebank_name):
+                                     treebank_name, fast_path=False):
     if 'Chinese' in treebank_name or 'Japanese' in treebank_name:
         pseudo_tokens = [c for c in sent_text]  # characters as pseudo tokens
     else:
@@ -128,28 +170,56 @@ def wordpiece_tokenize_from_raw_text(wordpiece_splitter, sent_text, sent_labels,
     original_characters = [c for c in single_original_string]
     character_locations = get_character_locations(original_characters, sent_text)
 
-    single_wordpiece_string = ''.join([p if not p.startswith('▁') else p.lstrip('▁') for p, pid in flat_wordpieces])
+    fast_result = None
+    if fast_path:
+        fast_result = _compute_wordpiece_mapping_fast(
+            pseudo_tokens, group_pieces, sent_labels, character_locations, sent_position_in_paragraph
+        )
 
-    wp_character_2_or_character = get_mapping_wp_character_to_or_character(wordpiece_splitter, single_wordpiece_string,
-                                                                           single_original_string)
+    debug_parity = os.environ.get('TRANKIT_TOKENIZER_FASTPATH_DEBUG') == '1'
 
-    flat_wordpiece_labels = []
-    flat_wordpiece_ends = []
-    offset = 0
-    for wordpiece, _ in flat_wordpieces:
-        if wordpiece.startswith('▁'):
-            str_form = wordpiece[1:]
-        else:
-            str_form = wordpiece
-        end_char = offset + len(str_form) - 1
-        ori_char = wp_character_2_or_character[end_char]
-        location_in_sentence = character_locations[ori_char]
-        wp_label = int(sent_labels[location_in_sentence])
-        wp_end = sent_position_in_paragraph + location_in_sentence
-        flat_wordpiece_labels.append(wp_label)
-        flat_wordpiece_ends.append(wp_end)
+    if fast_result is not None and not debug_parity:
+        flat_wordpiece_labels, flat_wordpiece_ends = fast_result
+    else:
+        # Slow path: character-level mapping
+        single_wordpiece_string = ''.join(
+            [p if not p.startswith('▁') else p.lstrip('▁') for p, pid in flat_wordpieces])
+        wp_character_2_or_character = get_mapping_wp_character_to_or_character(
+            wordpiece_splitter, single_wordpiece_string, single_original_string)
 
-        offset = end_char + 1
+        flat_wordpiece_labels = []
+        flat_wordpiece_ends = []
+        offset = 0
+        for wordpiece, _ in flat_wordpieces:
+            if wordpiece.startswith('▁'):
+                str_form = wordpiece[1:]
+            else:
+                str_form = wordpiece
+            end_char = offset + len(str_form) - 1
+            ori_char = wp_character_2_or_character[end_char]
+            location_in_sentence = character_locations[ori_char]
+            wp_label = int(sent_labels[location_in_sentence])
+            wp_end = sent_position_in_paragraph + location_in_sentence
+            flat_wordpiece_labels.append(wp_label)
+            flat_wordpiece_ends.append(wp_end)
+            offset = end_char + 1
+
+        if debug_parity and fast_result is not None:
+            fast_labels, fast_ends = fast_result
+            assert flat_wordpiece_labels == fast_labels, (
+                f"Fast path label mismatch:\n"
+                f"  slow={flat_wordpiece_labels}\n  fast={fast_labels}\n"
+                f"  sent_text={sent_text!r}"
+            )
+            assert flat_wordpiece_ends == fast_ends, (
+                f"Fast path ends mismatch:\n"
+                f"  slow={flat_wordpiece_ends}\n  fast={fast_ends}\n"
+                f"  sent_text={sent_text!r}"
+            )
+
+        if fast_path and fast_result is None:
+            global _fastpath_fallback_count
+            _fastpath_fallback_count += 1
 
     return flat_wordpieces, flat_wordpiece_labels, flat_wordpiece_ends, end_pids
 
@@ -203,7 +273,7 @@ def split_to_subsequences(wordpieces, wordpiece_labels, wordpiece_ends, end_piec
 
 
 def charlevel_format_to_wordpiece_format(wordpiece_splitter, max_input_length, plaintext, treebank_name,
-                                         char_labels_output_fpath=None):
+                                         char_labels_output_fpath=None, fast_path=False):
     if char_labels_output_fpath is not None:
         with open(char_labels_output_fpath) as f:
             corpus_labels = ''.join(f.readlines()).rstrip()
@@ -230,7 +300,7 @@ def charlevel_format_to_wordpiece_format(wordpiece_splitter, max_input_length, p
             wordpieces, wordpiece_labels, wordpiece_ends, end_piece_ids = wordpiece_tokenize_from_raw_text(
                 wordpiece_splitter, sent_text,
                 sent_labels, sent_start,
-                treebank_name)
+                treebank_name, fast_path=fast_path)
             kept_tokens += sum(1 for x in wordpiece_labels if x != 0)
             total_tokens += sum(1 for x in sent_labels if x != '0')
             if len(wordpieces) <= max_input_length - 2:  # minus 2: reserved for <s> and </s>
@@ -278,6 +348,9 @@ def charlevel_format_to_wordpiece_format(wordpiece_splitter, max_input_length, p
             'wordpiece_ends': wordpiece_ends,
             'paragraph_index': paragraph_index
         })
+
+    if fast_path and os.environ.get('TRANKIT_TOKENIZER_FASTPATH_STATS') == '1':
+        print(f'[tokenizer fast path] fallback count: {_fastpath_fallback_count}')
 
     return final_examples
 

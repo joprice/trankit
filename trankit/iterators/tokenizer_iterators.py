@@ -41,7 +41,8 @@ class TokenizeDatasetLive(Dataset):
             wordpiece_splitter=self.config.wordpiece_splitter,
             max_input_length=self.max_input_length,
             plaintext=self.raw_text,
-            treebank_name=self.config.treebank_name
+            treebank_name=self.config.treebank_name,
+            fast_path=True
         )
 
     def numberize(self, wordpiece_splitter):  # wordpiece tokenizer
