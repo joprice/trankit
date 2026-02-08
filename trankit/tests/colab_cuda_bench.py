@@ -6,7 +6,7 @@
 # ── Config ──────────────────────────────────────────────────
 EMBEDDING = "xlm-roberta-base"
 CACHE_ADAPTERS = True
-FP16 = True          # Set to False to disable autocast, None for auto
+FP16 = False         # Set to True to enable autocast (experimental)
 WARMUP_RUNS = 2
 BENCHMARK_RUNS = 10
 

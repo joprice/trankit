@@ -112,9 +112,9 @@ class Pipeline:
             self._cpu_lemma = (self._config.device.type == 'mps')
         else:
             self._cpu_lemma = cpu_lemma
-        # FP16 autocast: auto-enable on CUDA unless explicitly set
+        # FP16 autocast: off by default (weights already fp16 via .half() on CUDA)
         if fp16 is None:
-            self._fp16 = (self._config.device.type == 'cuda')
+            self._fp16 = False
         else:
             self._fp16 = fp16
         device_type = self._config.device.type
