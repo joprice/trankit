@@ -12,7 +12,7 @@ print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f}GB
 
 # ── 2. Install ───────────────────────────────────────────────
 !pip uninstall -y trankit adapters 2>/dev/null
-!pip install --no-cache-dir -q --no-deps git+https://github.com/joprice/trankit.git@adapter-caching
+!pip install --no-cache-dir -q --no-deps --force-reinstall git+https://github.com/joprice/trankit.git@adapter-caching
 !pip install --no-cache-dir -q adapters psutil langid filelock tqdm requests protobuf sentencepiece sacremoses regex packaging
 
 # ── 3. Setup ─────────────────────────────────────────────────
