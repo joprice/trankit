@@ -156,44 +156,38 @@ class NERDatasetLive(Dataset):
     def collate_fn(self, batch):
         batch_sent_index = [inst.sent_index for inst in batch]
         batch_word_ids = [inst.word_ids for inst in batch]
-
         batch_words = [inst.words for inst in batch]
         batch_word_num = [inst.word_num for inst in batch]
+        batch_word_lens = [inst.word_lens for inst in batch]
 
-        batch_word_lens = []
+        bs = len(batch)
+        max_wn = max(batch_word_num)
+        max_wp = max(len(inst.piece_idxs) for inst in batch)
 
-        max_word_num = max(batch_word_num)
-        batch_word_mask = []
-        batch_entity_label_idxs = []
+        piece_idxs = np.zeros((bs, max_wp), dtype=np.int64)
+        attn_masks = np.zeros((bs, max_wp), dtype=np.float32)
+        word_mask = np.zeros((bs, max_wn), dtype=np.int64)
+        entity_label_idxs = np.zeros((bs, max_wn), dtype=np.int64)
 
-        batch_piece_idxs = []
-        batch_attention_masks = []
-        max_wordpiece_num = max(len(inst.piece_idxs) for inst in batch)
+        for i, inst in enumerate(batch):
+            n_wp = len(inst.piece_idxs)
+            n_w = inst.word_num
 
-        for inst in batch:
-            batch_piece_idxs.append(inst.piece_idxs + [0] * (max_wordpiece_num - len(inst.piece_idxs)))
-            batch_attention_masks.append(inst.attention_masks + [0] * (max_wordpiece_num - len(inst.piece_idxs)))
-            batch_word_lens.append(inst.word_lens)
-            batch_word_mask.append([1] * inst.word_num + [0] * (max_word_num - inst.word_num))
-            batch_entity_label_idxs.append(inst.entity_label_idxs +
-                                           [0] * (max_word_num - inst.word_num))
-
-        batch_piece_idxs = torch.tensor(batch_piece_idxs, dtype=torch.long)
-        batch_attention_masks = torch.tensor(batch_attention_masks, dtype=torch.float)
-        batch_word_num = torch.tensor(batch_word_num, dtype=torch.long)
-        batch_word_mask = torch.tensor(batch_word_mask, dtype=torch.long).eq(0)
-        batch_entity_label_idxs = torch.tensor(batch_entity_label_idxs, dtype=torch.long)
+            piece_idxs[i, :n_wp] = inst.piece_idxs
+            attn_masks[i, :n_wp] = inst.attention_masks
+            word_mask[i, :n_w] = 1
+            entity_label_idxs[i, :n_w] = inst.entity_label_idxs
 
         return Batch(
             sent_index=batch_sent_index,
             word_ids=batch_word_ids,
             words=batch_words,
-            word_num=batch_word_num,
-            word_mask=batch_word_mask,
-            piece_idxs=batch_piece_idxs,
-            attention_masks=batch_attention_masks,
+            word_num=torch.tensor(batch_word_num, dtype=torch.long),
+            word_mask=torch.from_numpy(word_mask).eq(0),
+            piece_idxs=torch.from_numpy(piece_idxs),
+            attention_masks=torch.from_numpy(attn_masks),
             word_lens=batch_word_lens,
-            entity_label_idxs=batch_entity_label_idxs
+            entity_label_idxs=torch.from_numpy(entity_label_idxs),
         )
 
 

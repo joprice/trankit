@@ -35,6 +35,10 @@ bench-gpu:
 # run correctness then benchmark (both gpu)
 verify: test (bench)
 
+# compare current benchmark results against a git ref (default: HEAD)
+bench-compare ref="HEAD" *args="":
+    {{python}} trankit/tests/bench_compare.py {{ref}} {{args}}
+
 # quick smoke test on cpu
 test-cpu:
     TRANKIT_QUIET=1 {{python}} -c " \

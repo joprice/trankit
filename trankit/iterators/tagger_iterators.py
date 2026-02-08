@@ -144,86 +144,73 @@ class TaggerDatasetLive(Dataset):
 
     def collate_fn(self, batch):
         batch_sent_index = [inst.sent_index for inst in batch]
-
         batch_words = [inst.words for inst in batch]
         batch_word_num = [inst.word_num for inst in batch]
         batch_word_ids = [inst.word_ids for inst in batch]
+        batch_word_lens = [inst.word_lens for inst in batch]
 
-        batch_piece_idxs = []
-        batch_attention_masks = []
-        batch_word_lens = []
-        batch_word_span_idxs = []
+        bs = len(batch)
+        max_wn = max(batch_word_num)
+        max_wp = max(len(inst.piece_idxs) for inst in batch)
 
-        batch_edit_type_idxs = []
-        batch_upos_type_idxs = []
-        batch_xpos_type_idxs = []
-        batch_feats_type_idxs = []
+        # preallocate padded arrays
+        piece_idxs = np.zeros((bs, max_wp), dtype=np.int64)
+        attn_masks = np.zeros((bs, max_wp), dtype=np.float16)
+        word_span_idxs = np.empty((bs, max_wn, 2), dtype=np.int64)
+        word_span_idxs[:, :, 0] = 1
+        word_span_idxs[:, :, 1] = 2
 
-        batch_upos_ids, batch_xpos_ids, batch_feats_ids = [], [], []
+        edit_type_idxs = np.full((bs, max_wn), -100, dtype=np.int64)
+        upos_type_idxs = np.full((bs, max_wn), -100, dtype=np.int64)
+        xpos_type_idxs = np.full((bs, max_wn), -100, dtype=np.int64)
+        feats_type_idxs = np.full((bs, max_wn), -100, dtype=np.int64)
 
-        batch_head_ids, batch_deprel_ids, batch_word_mask = [], [], []
+        upos_ids = np.zeros((bs, max_wn), dtype=np.int64)
+        xpos_ids = np.zeros((bs, max_wn), dtype=np.int64)
 
-        max_word_num = max(batch_word_num)
-        max_wordpiece_num = max([len(inst.piece_idxs) for inst in batch])
+        head_ids = np.zeros((bs, max_wn), dtype=np.int64)
+        deprel_ids = np.zeros((bs, max_wn), dtype=np.int64)
+        word_mask = np.ones((bs, max_wn + 1), dtype=np.bool_)
 
-        for inst in batch:
-            batch_piece_idxs.append(inst.piece_idxs + [0] * (max_wordpiece_num - len(inst.piece_idxs)))
-            batch_attention_masks.append(inst.attention_masks + [0] * (max_wordpiece_num - len(inst.piece_idxs)))
-            batch_word_lens.append(inst.word_lens)
-            batch_word_span_idxs.append(inst.word_span_idxs + [[1, 2]] * (max_word_num - inst.word_num))
+        for i, inst in enumerate(batch):
+            n_wp = len(inst.piece_idxs)
+            n_w = inst.word_num
 
-            batch_edit_type_idxs.extend(inst.edit_type_idxs +
-                                        [-100] * (max_word_num - inst.word_num))
-            batch_upos_type_idxs.extend(inst.upos_type_idxs +
-                                        [-100] * (max_word_num - inst.word_num))
-            batch_xpos_type_idxs.extend(inst.xpos_type_idxs +
-                                        [-100] * (max_word_num - inst.word_num))
-            batch_feats_type_idxs.extend(inst.feats_type_idxs +
-                                         [-100] * (max_word_num - inst.word_num))
+            piece_idxs[i, :n_wp] = inst.piece_idxs
+            attn_masks[i, :n_wp] = inst.attention_masks
+            word_span_idxs[i, :n_w] = inst.word_span_idxs
 
-            batch_head_ids.append(inst.head_idxs + [0] * (max_word_num - inst.word_num))
-            batch_deprel_ids.append(inst.deprel_idxs + [0] * (max_word_num - inst.word_num))
-            batch_word_mask.append(inst.word_mask + [1] * (max_word_num - inst.word_num))
+            edit_type_idxs[i, :n_w] = inst.edit_type_idxs
+            upos_type_idxs[i, :n_w] = inst.upos_type_idxs
+            xpos_type_idxs[i, :n_w] = inst.xpos_type_idxs
+            feats_type_idxs[i, :n_w] = inst.feats_type_idxs
 
-            batch_upos_ids.append(inst.upos_type_idxs + [0] * (max_word_num - inst.word_num))
-            batch_xpos_ids.append(inst.xpos_type_idxs + [0] * (max_word_num - inst.word_num))
-            batch_feats_ids.append(inst.feats_type_idxs + [0] * (max_word_num - inst.word_num))
+            upos_ids[i, :n_w] = inst.upos_type_idxs
+            xpos_ids[i, :n_w] = inst.xpos_type_idxs
 
-        batch_piece_idxs = torch.tensor(batch_piece_idxs, dtype=torch.long)
-        batch_attention_masks = torch.tensor(batch_attention_masks, dtype=torch.float16)
-        batch_edit_type_idxs = torch.tensor(batch_edit_type_idxs, dtype=torch.long)
-        batch_word_span_idxs = torch.tensor(batch_word_span_idxs, dtype=torch.long)
-
-        batch_upos_type_idxs = torch.tensor(batch_upos_type_idxs, dtype=torch.long)
-        batch_xpos_type_idxs = torch.tensor(batch_xpos_type_idxs, dtype=torch.long)
-        batch_feats_type_idxs = torch.tensor(batch_feats_type_idxs, dtype=torch.long)
-
-        batch_upos_ids = torch.tensor(batch_upos_ids, dtype=torch.long)
-        batch_xpos_ids = torch.tensor(batch_xpos_ids, dtype=torch.long)
-
-        batch_head_ids = torch.tensor(batch_head_ids, dtype=torch.long)
-        batch_deprel_ids = torch.tensor(batch_deprel_ids, dtype=torch.long)
-        batch_word_mask = torch.tensor(batch_word_mask, dtype=torch.bool)
+            head_ids[i, :n_w] = inst.head_idxs
+            deprel_ids[i, :n_w] = inst.deprel_idxs
+            word_mask[i, :n_w + 1] = inst.word_mask
 
         return Batch(
             sent_index=batch_sent_index,
             word_ids=batch_word_ids,
             words=batch_words,
             word_num=batch_word_num,
-            piece_idxs=batch_piece_idxs,
-            attention_masks=batch_attention_masks,
+            piece_idxs=torch.from_numpy(piece_idxs),
+            attention_masks=torch.from_numpy(attn_masks),
             word_lens=batch_word_lens,
-            word_span_idxs=batch_word_span_idxs,
-            edit_type_idxs=batch_edit_type_idxs,
-            upos_type_idxs=batch_upos_type_idxs,
-            xpos_type_idxs=batch_xpos_type_idxs,
-            feats_type_idxs=batch_feats_type_idxs,
-            upos_ids=batch_upos_ids,
-            xpos_ids=batch_xpos_ids,
-            feats_ids=batch_feats_ids,
-            head_idxs=batch_head_ids,
-            deprel_idxs=batch_deprel_ids,
-            word_mask=batch_word_mask
+            word_span_idxs=torch.from_numpy(word_span_idxs),
+            edit_type_idxs=torch.from_numpy(edit_type_idxs.ravel()),
+            upos_type_idxs=torch.from_numpy(upos_type_idxs.ravel()),
+            xpos_type_idxs=torch.from_numpy(xpos_type_idxs.ravel()),
+            feats_type_idxs=torch.from_numpy(feats_type_idxs.ravel()),
+            upos_ids=torch.from_numpy(upos_ids),
+            xpos_ids=torch.from_numpy(xpos_ids),
+            feats_ids=torch.from_numpy(feats_type_idxs),
+            head_idxs=torch.from_numpy(head_ids),
+            deprel_idxs=torch.from_numpy(deprel_ids),
+            word_mask=torch.from_numpy(word_mask),
         )
 
 
