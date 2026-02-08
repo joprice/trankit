@@ -7,8 +7,10 @@
 EMBEDDING = "xlm-roberta-base"
 CACHE_ADAPTERS = True
 FP16 = False         # Set to True to enable autocast (experimental)
+CPU_LEMMA = False    # Set to True to move seq2seq lemma decoder to CPU
 WARMUP_RUNS = 2
 BENCHMARK_RUNS = 10
+PROFILE = True       # Set to True to collect cProfile stats
 
 # ── 1. Check CUDA ────────────────────────────────────────────
 import torch
@@ -32,7 +34,10 @@ warnings.filterwarnings("ignore", message=".*adapters available but none.*")
 import logging
 logging.getLogger("adapters").setLevel(logging.ERROR)
 
+import cProfile
+import io
 import math
+import pstats
 import sys
 import time
 import statistics
@@ -89,6 +94,9 @@ def gpu_mb():
     return torch.cuda.memory_allocated() / 1024**2
 
 
+profiler = cProfile.Profile() if PROFILE else None
+
+
 def benchmark_task(fn, text, label, runs=BENCHMARK_RUNS, warmup=WARMUP_RUNS):
     with torch.inference_mode():
         for _ in range(warmup):
@@ -97,6 +105,8 @@ def benchmark_task(fn, text, label, runs=BENCHMARK_RUNS, warmup=WARMUP_RUNS):
         num_tokens = count_tokens(result)
         num_sentences = count_sentences(result)
 
+        if profiler is not None:
+            profiler.enable()
         times = []
         for _ in range(runs):
             torch.cuda.synchronize()
@@ -105,6 +115,8 @@ def benchmark_task(fn, text, label, runs=BENCHMARK_RUNS, warmup=WARMUP_RUNS):
             torch.cuda.synchronize()
             elapsed = time.perf_counter() - start
             times.append(elapsed)
+        if profiler is not None:
+            profiler.disable()
 
     mean_t = statistics.mean(times)
     stdev_t = statistics.stdev(times) if len(times) > 1 else 0.0
@@ -140,12 +152,13 @@ def format_row(r):
 print(f"\n{'=' * 70}")
 print(f"Trankit CUDA Benchmark — {EMBEDDING} (adapter-caching)")
 print(f"Warmup: {WARMUP_RUNS} | Runs: {BENCHMARK_RUNS}")
-print(f"cache_adapters: {CACHE_ADAPTERS} | fp16: {FP16}")
+print(f"cache_adapters: {CACHE_ADAPTERS} | fp16: {FP16} | cpu_lemma: {CPU_LEMMA}")
+print(f"profile: {PROFILE}")
 print(f"{'=' * 70}\n")
 
 torch.cuda.empty_cache()
 t0 = time.perf_counter()
-p = Pipeline("english", gpu=True, cache_dir="./cache", embedding=EMBEDDING, fp16=FP16, cache_adapters=CACHE_ADAPTERS)
+p = Pipeline("english", gpu=True, cache_dir="./cache", embedding=EMBEDDING, fp16=FP16, cpu_lemma=CPU_LEMMA, cache_adapters=CACHE_ADAPTERS)
 init_time = time.perf_counter() - t0
 device_type = str(p._config.device.type)
 print(f"Device: {device_type}")
@@ -185,9 +198,20 @@ for label, fn in [
 print(f"\n{'=' * 70}")
 print("Done.\n")
 
+# ── 6b. Profile output ───────────────────────────────────────
+if profiler is not None:
+    print(f"\n{'=' * 70}")
+    print("cProfile — top 40 by cumulative time")
+    print(f"{'=' * 70}\n")
+    stream = io.StringIO()
+    ps = pstats.Stats(profiler, stream=stream)
+    ps.strip_dirs().sort_stats("cumtime").print_stats(40)
+    print(stream.getvalue())
+
 # ── 7. Save ──────────────────────────────────────────────────
 gpu_name = torch.cuda.get_device_name(0).replace(" ", "-")
-json_path = f"benchmark_results_{EMBEDDING.replace('/', '-')}_{gpu_name}.json"
+suffix = "_cpulemma" if CPU_LEMMA else ""
+json_path = f"benchmark_results_{EMBEDDING.replace('/', '-')}_{gpu_name}{suffix}.json"
 with open(json_path, "w") as f:
     json.dump({
         "embedding": EMBEDDING,
@@ -196,6 +220,7 @@ with open(json_path, "w") as f:
         "gpu": torch.cuda.get_device_name(0),
         "cache_adapters": CACHE_ADAPTERS,
         "fp16": FP16,
+        "cpu_lemma": CPU_LEMMA,
         "warmup_runs": WARMUP_RUNS,
         "benchmark_runs": BENCHMARK_RUNS,
         "init_time_sec": round(init_time, 2),

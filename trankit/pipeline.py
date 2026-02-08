@@ -150,6 +150,7 @@ class Pipeline:
         self._cache_adapters = cache_adapters
         if cache_adapters:
             self._resident_adapters = set()
+            self._active_slot = None  # tracks current set_active_adapters slot
             self._adapter_config = AdapterConfig.load(
                 "pfeiffer",
                 reduction_factor=6 if self._config.embedding_name == 'xlm-roberta-base' else 4
@@ -439,8 +440,10 @@ class Pipeline:
                         self._embedding_layers.xlmr.half()
                     self._resident_adapters.add(slot_name)
 
-            # Warm path: pointer swap only (~0.5ms)
-            self._embedding_layers.xlmr.set_active_adapters(Stack(slot_name))
+            # Warm path: skip if already active
+            if self._active_slot != slot_name:
+                self._embedding_layers.xlmr.set_active_adapters(Stack(slot_name))
+                self._active_slot = slot_name
         else:
             # Original behavior: copy weights into fixed slot on language change
             cached_lang = self._config.active_adapters.get(model_name)
@@ -474,6 +477,7 @@ class Pipeline:
             if slot_name in self._resident_adapters:
                 if slot_name in _active_adapter_names(xlmr):
                     xlmr.set_active_adapters(Stack('tokenizer'))
+                    self._active_slot = None  # invalidate: evicted adapter may have been active
                 xlmr.delete_adapter(slot_name)
                 self._resident_adapters.discard(slot_name)
 

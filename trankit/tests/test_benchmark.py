@@ -23,7 +23,7 @@ import torch
 import trankit
 
 
-def _pipeline_kwargs(embedding, gpu, cache_adapters, fp16=None):
+def _pipeline_kwargs(embedding, gpu, cache_adapters, fp16=None, cpu_lemma=None):
     """Build Pipeline constructor kwargs, skipping unsupported params for upstream."""
     kwargs = {"embedding": embedding, "gpu": gpu}
     sig = inspect.signature(trankit.Pipeline.__init__)
@@ -31,6 +31,8 @@ def _pipeline_kwargs(embedding, gpu, cache_adapters, fp16=None):
         kwargs["cache_adapters"] = cache_adapters
     if fp16 is not None and "fp16" in sig.parameters:
         kwargs["fp16"] = fp16
+    if cpu_lemma is not None and "cpu_lemma" in sig.parameters:
+        kwargs["cpu_lemma"] = cpu_lemma
     return kwargs
 
 WARMUP_RUNS = 2
@@ -221,7 +223,7 @@ def _runtime_metadata(embedding, gpu, cache_adapters, mode, extra=None):
     return metadata
 
 
-def run_benchmarks(embedding, gpu=True, profile_path=None, cache_adapters=True, fp16=None):
+def run_benchmarks(embedding, gpu=True, profile_path=None, cache_adapters=True, fp16=None, cpu_lemma=None):
     profiler = None
     if profile_path is not None:
         if profile_path == "":
@@ -243,7 +245,7 @@ def run_benchmarks(embedding, gpu=True, profile_path=None, cache_adapters=True, 
 
     print("Initializing pipeline...")
     t0 = time.perf_counter()
-    p = trankit.Pipeline("english", **_pipeline_kwargs(embedding, gpu, cache_adapters, fp16=fp16))
+    p = trankit.Pipeline("english", **_pipeline_kwargs(embedding, gpu, cache_adapters, fp16=fp16, cpu_lemma=cpu_lemma))
     init_time = time.perf_counter() - t0
     device_type = str(p._config.device.type)
     print(f"Pipeline initialized in {init_time:.2f}s (device: {device_type})\n")
@@ -319,7 +321,7 @@ def run_throughput_benchmark(embedding, gpu=True, cache_adapters=True,
                              num_docs=1000, target_words=300,
                              task="full", langs=None,
                              warmup=5, profile_path=None,
-                             batch_size=None, fp16=None):
+                             batch_size=None, fp16=None, cpu_lemma=None):
     profiler = None
     if profile_path is not None:
         if profile_path == "":
@@ -347,7 +349,7 @@ def run_throughput_benchmark(embedding, gpu=True, cache_adapters=True,
     # 1. Initialize pipeline
     print("Initializing pipeline...")
     t0 = time.perf_counter()
-    p = trankit.Pipeline(first_lang, **_pipeline_kwargs(embedding, gpu, cache_adapters, fp16=fp16))
+    p = trankit.Pipeline(first_lang, **_pipeline_kwargs(embedding, gpu, cache_adapters, fp16=fp16, cpu_lemma=cpu_lemma))
     init_time = time.perf_counter() - t0
     device_type = str(p._config.device.type)
     print(f"Pipeline initialized in {init_time:.2f}s (device: {device_type})")
@@ -537,7 +539,13 @@ if __name__ == "__main__":
     elif "--no-fp16" in flags:
         fp16 = False
     else:
-        fp16 = None  # auto (True on CUDA, False otherwise)
+        fp16 = None
+    if "--cpu-lemma" in flags:
+        cpu_lemma = True
+    elif "--no-cpu-lemma" in flags:
+        cpu_lemma = False
+    else:
+        cpu_lemma = None  # auto (True on MPS, False otherwise)
     profile_path = None
     for f in flags:
         if f.startswith("--profile="):
@@ -559,7 +567,7 @@ if __name__ == "__main__":
             num_docs=num_docs, target_words=target_words,
             task=task, langs=langs, warmup=warmup,
             profile_path=profile_path, batch_size=batch_size,
-            fp16=fp16,
+            fp16=fp16, cpu_lemma=cpu_lemma,
         )
     else:
-        run_benchmarks(embedding, gpu=gpu, profile_path=profile_path, cache_adapters=cache_adapters, fp16=fp16)
+        run_benchmarks(embedding, gpu=gpu, profile_path=profile_path, cache_adapters=cache_adapters, fp16=fp16, cpu_lemma=cpu_lemma)
