@@ -28,7 +28,7 @@ def batched_tokenize_words(tokenizer, words):
             f"batched_tokenize_words requires a fast tokenizer "
             f"(got {type(tokenizer).__name__})"
         )
-    enc = tokenizer(words, is_split_into_words=True, add_special_tokens=False)
+    enc = tokenizer(words, is_split_into_words=True, add_special_tokens=False, verbose=False)
     wids = enc.word_ids()
     if wids is None:
         raise RuntimeError(

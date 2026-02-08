@@ -77,7 +77,7 @@ def get_mapping_wp_character_to_or_character(wordpiece_splitter, wp_single_strin
             f"(got {type(wordpiece_splitter).__name__})"
         )
     chars = list(or_single_string)
-    enc = wordpiece_splitter(chars, is_split_into_words=True, add_special_tokens=False)
+    enc = wordpiece_splitter(chars, is_split_into_words=True, add_special_tokens=False, verbose=False)
     wids = enc.word_ids()
     if wids is None:
         raise RuntimeError(

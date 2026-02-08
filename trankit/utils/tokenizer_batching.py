@@ -11,7 +11,7 @@ def batched_tokenize_pseudo_tokens(tokenizer, pseudo_tokens):
             f"batched_tokenize_pseudo_tokens requires a fast tokenizer "
             f"(got {type(tokenizer).__name__})"
         )
-    enc = tokenizer(pseudo_tokens, is_split_into_words=True, add_special_tokens=False)
+    enc = tokenizer(pseudo_tokens, is_split_into_words=True, add_special_tokens=False, verbose=False)
     wids = enc.word_ids()
     if wids is None:
         raise RuntimeError(
