@@ -1,6 +1,6 @@
 import torch.nn.functional as F
 from .base_models import *
-from trankit.layers.crf_layer import CRFLoss, viterbi_decode
+from trankit.layers.crf_layer import CRFLoss, viterbi_decode, viterbi_decode_batch
 from ..utils.base_utils import *
 from ..utils.conll import *
 
@@ -44,20 +44,12 @@ class NERClassifier(nn.Module):
         return loss
 
     def predict(self, batch, word_reprs):
-        batch_size, _, _ = word_reprs.size()
-
         logits = self.entity_label_ffn(word_reprs)
-        _, trans = self.crit(logits, batch.word_mask, batch.entity_label_idxs)
-        # decode
-        trans = trans.data.cpu().numpy()
-        scores = logits.data.cpu().numpy()
-        bs = logits.size(0)
-        tag_seqs = []
-        for i in range(bs):
-            tags, _ = viterbi_decode(scores[i, :batch.word_num[i]], trans)
-            tags = [self.entity_label_itos[t] for t in tags]
-            tag_seqs += [tags]
-        return tag_seqs
+        trans = self.crit._transitions.detach()
+        lengths = batch.word_num.detach().cpu().tolist()
+        tag_id_seqs = viterbi_decode_batch(logits.detach(), trans, lengths)
+        return [[self.entity_label_itos[t] for t in tags[:l]]
+                for tags, l in zip(tag_id_seqs, lengths)]
 
 
 class PosDepClassifier(nn.Module):
@@ -182,8 +174,8 @@ class PosDepClassifier(nn.Module):
         # deprel
         deprel_scores = self.deprel(dep_reprs, dep_reprs)
         dep_preds = []
-        dep_preds.append(F.log_softmax(unlabeled_scores, 2).detach().cpu().numpy())
-        dep_preds.append(deprel_scores.max(3)[1].detach().cpu().numpy())
+        dep_preds.append(F.log_softmax(unlabeled_scores, 2).detach())
+        dep_preds.append(deprel_scores.max(3)[1].detach())
         return predicted_upos, predicted_xpos, predicted_feats, dep_preds
 
 

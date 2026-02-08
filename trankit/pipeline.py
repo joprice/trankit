@@ -414,7 +414,7 @@ class Pipeline:
             wordpiece_reprs = self._embedding_layers.get_tokenizer_inputs(batch)
             predictions = self._tokenizer[self._config.active_lang].predict(batch, wordpiece_reprs)
             wp_pred_labels, wp_ends, para_ids = predictions[0], predictions[1], predictions[2]
-            wp_pred_labels = wp_pred_labels.data.cpu().numpy().tolist()
+            wp_pred_labels = wp_pred_labels.detach().cpu().tolist()
 
             for i in range(len(wp_pred_labels)):
                 wordpiece_pred_labels.append(wp_pred_labels[i][: len(wp_ends[i])])
@@ -552,7 +552,7 @@ class Pipeline:
             wordpiece_reprs = self._embedding_layers.get_tokenizer_inputs(batch)
             predictions = self._tokenizer[self._config.active_lang].predict(batch, wordpiece_reprs)
             wp_pred_labels, wp_ends, para_ids = predictions[0], predictions[1], predictions[2]
-            wp_pred_labels = wp_pred_labels.data.cpu().numpy().tolist()
+            wp_pred_labels = wp_pred_labels.detach().cpu().tolist()
 
             for i in range(len(wp_pred_labels)):
                 wordpiece_pred_labels.append(wp_pred_labels[i][: len(wp_ends[i])])
@@ -673,7 +673,7 @@ class Pipeline:
             wordpiece_reprs = self._embedding_layers.get_tokenizer_inputs(batch)
             predictions = self._tokenizer[self._config.active_lang].predict(batch, wordpiece_reprs)
             wp_pred_labels, wp_ends, para_ids = predictions[0], predictions[1], predictions[2]
-            wp_pred_labels = wp_pred_labels.data.cpu().numpy().tolist()
+            wp_pred_labels = wp_pred_labels.detach().cpu().tolist()
 
             for i in range(len(wp_pred_labels)):
                 wordpiece_pred_labels.append(wp_pred_labels[i][: len(wp_ends[i])])
@@ -857,17 +857,19 @@ class Pipeline:
             predicted_xpos = predictions[1]
             predicted_feats = predictions[2]
 
-            predicted_upos = predicted_upos.data.cpu().numpy().tolist()
-            predicted_xpos = predicted_xpos.data.cpu().numpy().tolist()
-            predicted_feats = predicted_feats.data.cpu().numpy().tolist()
+            predicted_upos = predicted_upos.detach().cpu().tolist()
+            predicted_xpos = predicted_xpos.detach().cpu().tolist()
+            predicted_feats = predicted_feats.detach().cpu().tolist()
 
             # head, deprel
             predicted_dep = predictions[3]
+            dep_unlabeled = predicted_dep[0].cpu().numpy()
+            dep_labeled = predicted_dep[1].cpu().numpy()
             sentlens = [l + 1 for l in batch.word_num]
             head_seqs = [chuliu_edmonds_one_root(adj[:l, :l])[1:] for adj, l in
-                         zip(predicted_dep[0], sentlens)]  # remove attachment for the root
+                         zip(dep_unlabeled, sentlens)]  # remove attachment for the root
             deprel_seqs = [
-                [itos[DEPREL][predicted_dep[1][i][j + 1][h]] for j, h in
+                [itos[DEPREL][dep_labeled[i][j + 1][h]] for j, h in
                  enumerate(hs)] for
                 i, hs
                 in
@@ -939,17 +941,19 @@ class Pipeline:
             predicted_xpos = predictions[1]
             predicted_feats = predictions[2]
 
-            predicted_upos = predicted_upos.data.cpu().numpy().tolist()
-            predicted_xpos = predicted_xpos.data.cpu().numpy().tolist()
-            predicted_feats = predicted_feats.data.cpu().numpy().tolist()
+            predicted_upos = predicted_upos.detach().cpu().tolist()
+            predicted_xpos = predicted_xpos.detach().cpu().tolist()
+            predicted_feats = predicted_feats.detach().cpu().tolist()
 
             # head, deprel
             predicted_dep = predictions[3]
+            dep_unlabeled = predicted_dep[0].cpu().numpy()
+            dep_labeled = predicted_dep[1].cpu().numpy()
             sentlens = [l + 1 for l in batch.word_num]
             head_seqs = [chuliu_edmonds_one_root(adj[:l, :l])[1:] for adj, l in
-                         zip(predicted_dep[0], sentlens)]  # remove attachment for the root
+                         zip(dep_unlabeled, sentlens)]  # remove attachment for the root
             deprel_seqs = [
-                [itos[DEPREL][predicted_dep[1][i][j + 1][h]] for j, h in
+                [itos[DEPREL][dep_labeled[i][j + 1][h]] for j, h in
                  enumerate(hs)] for
                 i, hs
                 in
@@ -1231,16 +1235,18 @@ class Pipeline:
 
                     word_reprs, cls_reprs = self._embedding_layers.get_tagger_inputs(batch)
                     predictions = self._tagger[self._config.active_lang].predict(batch, word_reprs, cls_reprs)
-                    predicted_upos = predictions[0].data.cpu().numpy().tolist()
-                    predicted_xpos = predictions[1].data.cpu().numpy().tolist()
-                    predicted_feats = predictions[2].data.cpu().numpy().tolist()
+                    predicted_upos = predictions[0].detach().cpu().tolist()
+                    predicted_xpos = predictions[1].detach().cpu().tolist()
+                    predicted_feats = predictions[2].detach().cpu().tolist()
 
                     predicted_dep = predictions[3]
+                    dep_unlabeled = predicted_dep[0].cpu().numpy()
+                    dep_labeled = predicted_dep[1].cpu().numpy()
                     sentlens = [l + 1 for l in batch.word_num]
                     head_seqs = [chuliu_edmonds_one_root(adj[:l, :l])[1:] for adj, l in
-                                 zip(predicted_dep[0], sentlens)]
+                                 zip(dep_unlabeled, sentlens)]
                     deprel_seqs = [
-                        [itos[DEPREL][predicted_dep[1][i][j + 1][h]] for j, h in
+                        [itos[DEPREL][dep_labeled[i][j + 1][h]] for j, h in
                          enumerate(hs)] for i, hs in enumerate(head_seqs)]
 
                     pred_tokens = [[[head_seqs[i][j], deprel_seqs[i][j]] for j in range(sentlens[i] - 1)] for i in
@@ -1346,16 +1352,18 @@ class Pipeline:
 
                     word_reprs, cls_reprs = self._embedding_layers.get_tagger_inputs(batch)
                     predictions = self._tagger[self._config.active_lang].predict(batch, word_reprs, cls_reprs)
-                    predicted_upos = predictions[0].data.cpu().numpy().tolist()
-                    predicted_xpos = predictions[1].data.cpu().numpy().tolist()
-                    predicted_feats = predictions[2].data.cpu().numpy().tolist()
+                    predicted_upos = predictions[0].detach().cpu().tolist()
+                    predicted_xpos = predictions[1].detach().cpu().tolist()
+                    predicted_feats = predictions[2].detach().cpu().tolist()
 
                     predicted_dep = predictions[3]
+                    dep_unlabeled = predicted_dep[0].cpu().numpy()
+                    dep_labeled = predicted_dep[1].cpu().numpy()
                     sentlens = [l + 1 for l in batch.word_num]
                     head_seqs = [chuliu_edmonds_one_root(adj[:l, :l])[1:] for adj, l in
-                                 zip(predicted_dep[0], sentlens)]
+                                 zip(dep_unlabeled, sentlens)]
                     deprel_seqs = [
-                        [itos[DEPREL][predicted_dep[1][i][j + 1][h]] for j, h in
+                        [itos[DEPREL][dep_labeled[i][j + 1][h]] for j, h in
                          enumerate(hs)] for i, hs in enumerate(head_seqs)]
 
                     pred_tokens = [[[head_seqs[i][j], deprel_seqs[i][j]] for j in range(sentlens[i] - 1)] for i in

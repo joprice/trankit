@@ -98,6 +98,56 @@ class CRFLoss(nn.Module):
         return log_norm
 
 
+def viterbi_decode_batch(scores, trans, lengths):
+    """Batched viterbi forward pass on GPU, backtrace on CPU.
+    scores: (B, T, C) GPU tensor
+    trans:  (C, C) GPU tensor
+    lengths: list[int]
+    Returns: list of tag-id lists (one per batch element)
+    """
+    B, T, C = scores.shape
+    if B == 0:
+        return []
+    if C > 32767:
+        raise ValueError(f"num_tags {C} exceeds int16 range")
+    if len(lengths) != B:
+        raise ValueError(f"lengths ({len(lengths)}) != batch size ({B})")
+    if not all(l > 0 for l in lengths):
+        raise ValueError("all lengths must be positive")
+    if max(lengths) > T:
+        raise ValueError(f"max length ({max(lengths)}) exceeds seq dim ({T})")
+    lengths_t = torch.tensor(lengths, device=scores.device, dtype=torch.long)
+    trans = trans.to(device=scores.device, dtype=scores.dtype)
+
+    trellis = scores[:, 0].clone()                        # (B, C) running row
+    final_scores = trellis.clone()                         # (B, C) per-sample final
+    backpointers = torch.zeros(B, T, C, device=scores.device, dtype=torch.int16)
+
+    for t in range(1, T):
+        v = trellis.unsqueeze(2) + trans.unsqueeze(0)      # (B, C, C)
+        trellis = scores[:, t] + v.max(dim=1).values       # (B, C)
+        backpointers[:, t] = v.argmax(dim=1).to(torch.int16)
+        # snapshot final scores for samples ending at this timestep
+        mask = (lengths_t - 1 == t)                        # (B,)
+        if mask.any():
+            final_scores[mask] = trellis[mask]
+
+    # handle L=1 case: final_scores is already set from clone of scores[:,0]
+    # two transfers: backpointers (B,T,C int16) + final scores (B,C)
+    bp_cpu = backpointers.cpu().numpy()
+    final_cpu = final_scores.cpu().numpy()
+
+    results = []
+    for i in range(B):
+        L = lengths[i]
+        seq = [int(np.argmax(final_cpu[i]))]
+        for t in range(L - 1, 0, -1):
+            seq.append(int(bp_cpu[i, t, seq[-1]]))
+        seq.reverse()
+        results.append(seq)
+    return results
+
+
 def viterbi_decode(scores, transition_params):
     """
     Decode a tag sequence with viterbi algorithm.
