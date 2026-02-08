@@ -552,7 +552,7 @@ class Seq2SeqModel(nn.Module):
             _, preds = log_probs.squeeze(1).max(1, keepdim=True)
             dec_inputs = self.embedding(preds)  # update decoder inputs
             max_len += 1
-            preds_cpu = preds.data[:, 0].cpu().tolist()  # one transfer per step
+            preds_cpu = preds.detach().squeeze(1).cpu().tolist()  # one transfer per step
             for i in range(batch_size):
                 if not done[i]:
                     token = preds_cpu[i]
