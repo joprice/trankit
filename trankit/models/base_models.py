@@ -55,6 +55,12 @@ class Base_Model(nn.Module):  # currently assuming the pretrained transformer is
 class Multilingual_Embedding(Base_Model):
     def __init__(self, config, model_name='embedding'):
         super(Multilingual_Embedding, self).__init__(config, task_name=model_name)
+        # Register separate adapter slots for each task type so we can switch
+        # between them without reloading weights (just set_active_adapters).
+        task_config = AdapterConfig.load("pfeiffer",
+                                         reduction_factor=6 if config.embedding_name == 'xlm-roberta-base' else 4)
+        for adapter_name in ['tokenizer', 'tagger', 'ner']:
+            self.xlmr.add_adapter(adapter_name, config=task_config)
 
     def get_tokenizer_inputs(self, batch):
         wordpiece_reprs = self.encode(

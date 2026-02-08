@@ -343,11 +343,18 @@ class Pipeline:
                 assert model_name == 'ner'
                 pretrained_weights = self._ner_model[current_lang].pretrained_ner_weights
 
+            # Load into the task-specific adapter slot (tokenizer/tagger/ner)
+            # instead of a shared 'embedding' slot. The pretrained weights already
+            # use matching names (e.g. layer_text_task_adapters.tokenizer.*), so
+            # no load_as rename is needed.
             self._adapter_loader.load_from_state_dict(
-                pretrained_weights, model_name, load_as="embedding", start_prefix="xlmr."
+                pretrained_weights, model_name, start_prefix="xlmr."
             )
             # Cache which language's adapter is now loaded for this type
             self._config.active_adapters[model_name] = current_lang
+
+        # Activate this task's adapter for the next forward pass
+        self._embedding_layers.xlmr.set_active_adapters([model_name])
 
     def _detect_lang_and_switch(self, text):
         detected_code = langid.classify(text)[0]
