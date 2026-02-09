@@ -24,9 +24,17 @@ PATCH_ADAPTER_OVERHEAD = True  # Set to False to skip adapter composition monkey
 PIN_MEMORY = None              # None = auto (True on CUDA), set False to test without
 
 import os
+import subprocess
+import sys
+
 os.environ['TRANKIT_BYPASS_ADAPTER_RESET'] = '1' if BYPASS_ADAPTER_RESET else '0'
 os.environ['TRANKIT_STRIP_LORA'] = '1' if STRIP_LORA else '0'
 os.environ['TRANKIT_PATCH_ADAPTER_OVERHEAD'] = '1' if PATCH_ADAPTER_OVERHEAD else '0'
+
+
+def pip(*args):
+    subprocess.check_call([sys.executable, "-m", "pip", *args])
+
 
 # ── 1. Check CUDA ────────────────────────────────────────────
 import torch
@@ -38,14 +46,13 @@ print(f"GPU: {torch.cuda.get_device_name(0)}")
 print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f}GB")
 
 # ── 2. Install ───────────────────────────────────────────────
-!pip uninstall -y trankit adapters 2>/dev/null
-!pip install --no-cache-dir -q --no-deps --force-reinstall git+https://github.com/joprice/trankit.git@adapter-caching
-!pip install --no-cache-dir -q adapters psutil langid filelock tqdm requests protobuf sentencepiece sacremoses regex packaging
+pip("uninstall", "-y", "trankit", "adapters")
+pip("install", "--no-cache-dir", "-q", "--no-deps", "--force-reinstall", "git+https://github.com/joprice/trankit.git@adapter-caching")
+pip("install", "--no-cache-dir", "-q", "adapters", "psutil", "langid", "filelock", "tqdm", "requests", "protobuf", "sentencepiece", "sacremoses", "regex", "packaging")
 
 # ── 3. Setup ─────────────────────────────────────────────────
 # Flush stale trankit modules from previous Colab cell runs so
 # Python reimports from the freshly pip-installed files on disk.
-import sys
 for _mod in list(sys.modules):
     if _mod == 'trankit' or _mod.startswith('trankit.'):
         del sys.modules[_mod]
