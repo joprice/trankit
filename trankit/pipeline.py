@@ -323,7 +323,7 @@ class Pipeline:
         if self._gpu and torch.cuda.is_available():
             self._use_gpu = True
             self._use_half = True
-            self._pin_memory = True
+            self._pin_memory = False
             self._non_blocking = True
             self.master_config.device = torch.device('cuda')
             self._tokbatchsize = 6
