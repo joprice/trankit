@@ -146,6 +146,37 @@ def test_batch_process_parity(p):
     print("PASS: batch_process parity")
 
 
+def test_fused_vs_unfused(p):
+    """Fused tagger+NER loop must produce identical results to unfused two-loop path."""
+    import trankit.batch_pipeline as bp
+    saved = bp._FUSE_TAGGER_NER
+
+    with torch.no_grad():
+        bp._FUSE_TAGGER_NER = True
+        fused_results = batch_process(p, DOCS, batch_tokenize=True)
+
+        bp._FUSE_TAGGER_NER = False
+        unfused_results = batch_process(p, DOCS, batch_tokenize=True)
+
+    bp._FUSE_TAGGER_NER = saved
+
+    if len(fused_results) != len(unfused_results):
+        raise RuntimeError(
+            f"fused returned {len(fused_results)} results, "
+            f"unfused returned {len(unfused_results)}"
+        )
+
+    for i, (fr, ur) in enumerate(zip(fused_results, unfused_results)):
+        diffs = compare(fr, ur)
+        if diffs:
+            raise RuntimeError(
+                f"fused vs unfused parity failure for doc {i}: "
+                f"{len(diffs)} differences:\n" +
+                "\n".join(f"  {d}" for d in diffs[:10])
+            )
+    print("PASS: fused vs unfused parity")
+
+
 def run_parity_tests():
     p = trankit.Pipeline("english", embedding="xlm-roberta-base")
     all_passed = True
@@ -154,6 +185,7 @@ def run_parity_tests():
         ("tokenize_batch parity", test_tokenize_batch_parity),
         ("whitespace docs", test_whitespace_docs),
         ("batch_process parity", test_batch_process_parity),
+        ("fused vs unfused", test_fused_vs_unfused),
     ]:
         try:
             fn(p)
