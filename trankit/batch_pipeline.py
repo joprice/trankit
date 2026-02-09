@@ -18,6 +18,7 @@ All documents in a single batch_process call must be the same language
 """
 
 import os
+import time
 import torch
 from copy import deepcopy
 from torch.utils.data import DataLoader
@@ -60,10 +61,15 @@ def batch_process(pipeline, docs, skip_dict_seq2seq=None, batch_tokenize=None):
 
     use_batch_tok = batch_tokenize if batch_tokenize is not None else _BATCH_TOKENIZE
 
+    # Wall-clock stage times (not pure GPU kernel time — includes host-device
+    # sync points like .cpu().tolist(), collation, DataLoader overhead, etc.)
+    stage_times = {}
+
     # ── Stage 1: Tokenize ──
     all_tokenized = []  # flat list of sentence dicts across all docs
     doc_sent_counts = []  # number of sentences per doc, for demux
 
+    _t0 = time.perf_counter()
     if use_batch_tok:
         all_doc_sents = pipeline._tokenize_docs(docs)
         for sents in all_doc_sents:
@@ -74,11 +80,15 @@ def batch_process(pipeline, docs, skip_dict_seq2seq=None, batch_tokenize=None):
             sents = pipeline._tokenize_doc(in_doc=doc_text)
             doc_sent_counts.append(len(sents))
             all_tokenized.extend(sents)
+    stage_times['tokenize'] = time.perf_counter() - _t0
 
     if not all_tokenized:
+        stage_times.update(tagger=0, lemma=0, ner=0)
+        pipeline._last_batch_stage_times = stage_times
         return [{TEXT: doc_text, SENTENCES: [], LANG: active_lang} for doc_text in docs]
 
     # ── Stage 2: POS tagging + dependency parsing (merged batch) ──────────
+    _t0 = time.perf_counter()
     tagger_test_set = TaggerDatasetLive(
         tokenized_doc=all_tokenized,
         wordpiece_splitter=config.wordpiece_splitter,
@@ -134,11 +144,15 @@ def batch_process(pipeline, docs, skip_dict_seq2seq=None, batch_tokenize=None):
             del predictions, sentlens, head_seqs, deprel_seqs, pred_tokens
 
     tagged_doc = get_output_doc(all_tokenized, tagger_test_set.conllu_doc)
+    stage_times['tagger'] = time.perf_counter() - _t0
 
     # ── Stage 3: Lemmatization (merged batch) ────────────────────────────
+    _t0 = time.perf_counter()
     out = pipeline._lemmatize_doc(tagged_doc, skip_dict_seq2seq=skip_dict_seq2seq)
+    stage_times['lemma'] = time.perf_counter() - _t0
 
     # ── Stage 4: NER (merged batch, reusing tagger dataset) ──────────────
+    _t0 = time.perf_counter()
     if active_lang in langwithner:
         has_mwt = tbname2training_id[config.treebank_name] % 2 == 1
         if has_mwt:
@@ -167,6 +181,11 @@ def batch_process(pipeline, docs, skip_dict_seq2seq=None, batch_tokenize=None):
                             out[sentid][TOKENS][wordid][NER] = pred_entity_labels[bid][i]
 
                     del pred_entity_labels
+
+    stage_times['ner'] = time.perf_counter() - _t0
+
+    # Store stage timing on the pipeline for external access
+    pipeline._last_batch_stage_times = stage_times
 
     # ── Demux: slice merged results back to per-document ─────────────────
     results = []

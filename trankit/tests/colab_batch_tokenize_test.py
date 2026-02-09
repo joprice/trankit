@@ -185,15 +185,26 @@ def percentile(sorted_data, p):
     return sorted_data[lo] + frac * (sorted_data[hi] - sorted_data[lo])
 
 
-def run_scenario(p, doc_text, task, batch_tokenize, num_docs, batch_size, warmup):
+def run_scenario(p, doc_text, task, mode, num_docs, batch_size, warmup):
     """Run a single scenario and return timing dict."""
     docs_list = [doc_text] * num_docs
 
     def run_batch(chunk):
-        if task == "tokenize":
-            return p.tokenize_batch(chunk)
-        else:
-            return p.batch(chunk, batch_tokenize=batch_tokenize)
+        if mode == "serial":
+            if task == "tokenize":
+                return [p.tokenize(d) for d in chunk]
+            else:
+                return [p(d) for d in chunk]
+        elif mode == "merged":
+            if task == "tokenize":
+                return p.tokenize_batch(chunk)
+            else:
+                return p.batch(chunk, batch_tokenize=True)
+        else:  # per-doc
+            if task == "tokenize":
+                return [p.tokenize(d) for d in chunk]
+            else:
+                return p.batch(chunk, batch_tokenize=False)
 
     # Warmup
     with torch.inference_mode():
@@ -268,16 +279,20 @@ header = (f"{'Scenario':<20s} {'Mode':<10s} {'docs/s':>7s} {'tok/s':>8s} "
 print(header)
 print("-" * len(header))
 
+ALL_MODES = ["merged", "per-doc", "serial"]
+
 for label, target_words, task in SCENARIOS:
     doc_text = make_document(target_words)
     actual_words = len(doc_text.split())
 
-    for mode, batch_tokenize in [("merged", True), ("per-doc", False)]:
-        r = run_scenario(p, doc_text, task, batch_tokenize,
+    # "per-doc" is identical to "serial" for tokenize-only tasks — skip it
+    modes = [m for m in ALL_MODES if not (task == "tokenize" and m == "per-doc")]
+
+    for mode in modes:
+        r = run_scenario(p, doc_text, task, mode,
                          NUM_DOCS, BATCH_SIZE, WARMUP)
         r["scenario"] = label
         r["mode"] = mode
-        r["batch_tokenize"] = batch_tokenize
         r["target_words"] = target_words
         r["actual_words"] = actual_words
         r["task"] = task
@@ -289,19 +304,71 @@ for label, target_words, task in SCENARIOS:
 
 # ── 6. Summary ───────────────────────────────────────────────
 print(f"\n{'=' * 70}")
-print("SPEEDUP: merged vs per-doc tokenizer GPU pass")
+print("SPEEDUP: merged vs serial")
 print("=" * 70)
 
 for label, target_words, task in SCENARIOS:
     merged = next(r for r in all_results if r["scenario"] == label and r["mode"] == "merged")
-    perdoc = next(r for r in all_results if r["scenario"] == label and r["mode"] == "per-doc")
-    if perdoc["docs_per_sec"] > 0:
-        speedup = merged["docs_per_sec"] / perdoc["docs_per_sec"]
+    serial = next(r for r in all_results if r["scenario"] == label and r["mode"] == "serial")
+    if serial["docs_per_sec"] > 0:
+        speedup = merged["docs_per_sec"] / serial["docs_per_sec"]
     else:
         speedup = 0
-    delta_ms = perdoc["mean_ms"] - merged["mean_ms"]
-    print(f"  {label:<20s}  {merged['docs_per_sec']:>5.1f} vs {perdoc['docs_per_sec']:>5.1f} docs/s  "
+    delta_ms = serial["mean_ms"] - merged["mean_ms"]
+    print(f"  {label:<20s}  {merged['docs_per_sec']:>5.1f} vs {serial['docs_per_sec']:>5.1f} docs/s  "
           f"speedup={speedup:.2f}x  delta={delta_ms:+.1f}ms/doc")
+
+print(f"\n{'=' * 70}")
+
+# ── 6b. Stage-level profiling for long/full ──────────────────
+print("\nSTAGE PROFILING: long/full merged (wall-clock time per stage)")
+print("=" * 70)
+
+profile_doc = make_document(300)
+profile_docs = [profile_doc] * NUM_DOCS
+
+# Warmup
+with torch.inference_mode():
+    for _ in range(3):
+        batch_process(p, profile_docs[:5], batch_tokenize=True)
+    torch.cuda.synchronize()
+
+# Timed runs — collect stage times across batches
+stage_accum = {}
+profile_times = []
+
+with torch.inference_mode():
+    for i in range(0, NUM_DOCS, BATCH_SIZE):
+        chunk = profile_docs[i:i + BATCH_SIZE]
+        torch.cuda.synchronize()
+        t0 = time.perf_counter()
+        batch_process(p, chunk, batch_tokenize=True)
+        torch.cuda.synchronize()
+        elapsed = time.perf_counter() - t0
+        profile_times.append(elapsed)
+
+        # Accumulate stage times from the pipeline
+        if hasattr(p, '_last_batch_stage_times'):
+            for stage, dt in p._last_batch_stage_times.items():
+                stage_accum[stage] = stage_accum.get(stage, 0.0) + dt
+
+total_wall = sum(profile_times)
+total_docs = NUM_DOCS
+
+print(f"  Total: {total_wall:.2f}s  ({total_docs / total_wall:.1f} docs/s)")
+print(f"  Per doc: {total_wall / total_docs * 1000:.1f}ms")
+print()
+
+if stage_accum:
+    for stage in ['tokenize', 'tagger', 'lemma', 'ner']:
+        if stage in stage_accum:
+            st = stage_accum[stage]
+            pct = st / total_wall * 100
+            per_doc = st / total_docs * 1000
+            print(f"  {stage:<12s}  {st:>6.2f}s  {pct:>5.1f}%  {per_doc:>6.1f}ms/doc")
+    overhead = total_wall - sum(stage_accum.values())
+    if overhead > 0.01:
+        print(f"  {'overhead':<12s}  {overhead:>6.2f}s  {overhead / total_wall * 100:>5.1f}%  {overhead / total_docs * 1000:>6.1f}ms/doc")
 
 print(f"\n{'=' * 70}")
 
