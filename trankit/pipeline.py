@@ -14,6 +14,7 @@ from .utils.tbinfo import tbname2training_id, lang2treebank
 from .utils.chuliu_edmonds import *
 from adapters.loading import AdapterLoader
 from adapters import AdapterConfig, Stack
+from adapters.composition import parse_composition
 from contextlib import nullcontext
 from datetime import datetime
 import langid
@@ -440,9 +441,15 @@ class Pipeline:
                         self._embedding_layers.xlmr.half()
                     self._resident_adapters.add(slot_name)
 
-            # Warm path: skip if already active
+            # Warm path: skip if already active.
+            # Bypass set_active_adapters (which calls reset_adapter, iterating
+            # all modules for LoRA resets we don't need) and set config directly.
             if self._active_slot != slot_name:
-                self._embedding_layers.xlmr.set_active_adapters(Stack(slot_name))
+                xlmr = self._embedding_layers.xlmr
+                xlmr.adapters_config.active_setup = parse_composition(
+                    Stack(slot_name), model_type=xlmr.config.model_type
+                )
+                xlmr.adapters_config.skip_layers = None
                 self._active_slot = slot_name
         else:
             # Original behavior: copy weights into fixed slot on language change

@@ -150,7 +150,15 @@ def format_row(r):
 
 # ── 4. Initialize ────────────────────────────────────────────
 print(f"\n{'=' * 70}")
+import importlib.metadata as _meta
+_trankit_ver = _meta.version("trankit")
+try:
+    _direct_url = json.loads(_meta.distribution("trankit").read_text("direct_url.json"))
+    _commit = _direct_url.get("vcs_info", {}).get("commit_id", "unknown")[:10]
+except Exception:
+    _commit = "unknown"
 print(f"Trankit CUDA Benchmark — {EMBEDDING} (adapter-caching)")
+print(f"trankit: {_trankit_ver} commit {_commit}")
 print(f"Warmup: {WARMUP_RUNS} | Runs: {BENCHMARK_RUNS}")
 print(f"cache_adapters: {CACHE_ADAPTERS} | fp16: {FP16} | cpu_lemma: {CPU_LEMMA}")
 print(f"profile: {PROFILE}")
