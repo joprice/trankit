@@ -72,6 +72,21 @@ def batch_encode_pieces(tokenizer, pieces_list, max_length):
     return results
 
 
+_BUCKET_STEP_DEFAULT = 64
+try:
+    _BUCKET_STEP = int(os.environ.get('TRANKIT_BUCKET_STEP', _BUCKET_STEP_DEFAULT))
+    if _BUCKET_STEP <= 0:
+        _BUCKET_STEP = _BUCKET_STEP_DEFAULT
+except (ValueError, TypeError):
+    _BUCKET_STEP = _BUCKET_STEP_DEFAULT
+
+def pad_to_bucket(length, step=_BUCKET_STEP):
+    """Round length up to the next multiple of step."""
+    if length <= 0:
+        return 0
+    return ((length + step - 1) // step) * step
+
+
 def batched_tokenize_words(tokenizer, words):
     """Tokenize words in a single batched call. Requires a fast tokenizer."""
     if not words:

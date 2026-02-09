@@ -54,11 +54,7 @@ class TokenizeDatasetLive(Dataset):
             paragraph_index = inst['paragraph_index']
             # Pad word pieces with special tokens
             piece_idxs = encode_pieces(wordpiece_splitter, wordpieces, self.max_input_length)
-            assert len(piece_idxs) <= self.max_input_length
-
-            pad_num = self.max_input_length - len(piece_idxs)
-            attn_masks = [1] * len(piece_idxs) + [0] * pad_num
-            piece_idxs = piece_idxs + [0] * pad_num
+            attn_masks = [1] * len(piece_idxs)
 
             # token type idxs
             token_type_idxs = [-100 if piece_id >= len(wordpieces) else wordpiece_labels[piece_id] for piece_id in
@@ -82,10 +78,6 @@ class TokenizeDatasetLive(Dataset):
         batch_wordpieces = []
         batch_wordpiece_labels = []
         batch_wordpiece_ends = []
-
-        batch_piece_idxs = []
-        batch_attention_masks = []
-        batch_token_type_idxs = []
         batch_wordpiece_num = []
 
         for inst in batch:
@@ -93,28 +85,36 @@ class TokenizeDatasetLive(Dataset):
             batch_wordpieces.append(inst.wordpieces)
             batch_wordpiece_labels.append(inst.wordpiece_labels)
             batch_wordpiece_ends.append(inst.wordpiece_ends)
-
-            batch_piece_idxs.append(inst.piece_idxs)
-            batch_attention_masks.append(inst.attention_masks)
-
-            batch_token_type_idxs.append(inst.token_type_idxs)
-
             batch_wordpiece_num.append(inst.wordpiece_num)
 
-        batch_piece_idxs = torch.tensor(batch_piece_idxs, dtype=torch.long)
-        batch_attention_masks = torch.tensor(batch_attention_masks, dtype=torch.long)
-        batch_token_type_idxs = torch.tensor(batch_token_type_idxs, dtype=torch.long)
-        batch_wordpiece_num = torch.tensor(batch_wordpiece_num, dtype=torch.long)
+        bs = len(batch)
+        raw_max_wp = max(len(inst.piece_idxs) for inst in batch)
+        if raw_max_wp < 2:
+            raise RuntimeError(
+                f"Tokenizer batch has max piece_idxs length {raw_max_wp}, expected >= 2 (BOS+EOS)"
+            )
+        max_wp = pad_to_bucket(raw_max_wp)
+
+        piece_idxs = np.zeros((bs, max_wp), dtype=np.int64)
+        attn_masks = np.zeros((bs, max_wp), dtype=np.int64)
+        token_type_idxs = np.full((bs, max_wp - 2), -100, dtype=np.int64)
+
+        for i, inst in enumerate(batch):
+            n_pi = len(inst.piece_idxs)
+            piece_idxs[i, :n_pi] = inst.piece_idxs
+            attn_masks[i, :n_pi] = inst.attention_masks
+            n_tt = len(inst.token_type_idxs)
+            token_type_idxs[i, :n_tt] = inst.token_type_idxs
 
         return Batch(
             paragraph_index=batch_paragraph_index,
             wordpieces=batch_wordpieces,
             wordpiece_labels=batch_wordpiece_labels,
             wordpiece_ends=batch_wordpiece_ends,
-            piece_idxs=batch_piece_idxs,
-            attention_masks=batch_attention_masks,
-            token_type_idxs=batch_token_type_idxs,
-            wordpiece_num=batch_wordpiece_num
+            piece_idxs=torch.from_numpy(piece_idxs),
+            attention_masks=torch.from_numpy(attn_masks),
+            token_type_idxs=torch.from_numpy(token_type_idxs),
+            wordpiece_num=torch.tensor(batch_wordpiece_num, dtype=torch.long),
         )
 
 

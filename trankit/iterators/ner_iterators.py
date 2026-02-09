@@ -155,7 +155,7 @@ class NERDatasetLive(Dataset):
 
         bs = len(batch)
         max_wn = max(batch_word_num)
-        max_wp = max(len(inst.piece_idxs) for inst in batch)
+        max_wp = pad_to_bucket(max(len(inst.piece_idxs) for inst in batch))
 
         piece_idxs = np.zeros((bs, max_wp), dtype=np.int64)
         attn_masks = np.zeros((bs, max_wp), dtype=np.float32)

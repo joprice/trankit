@@ -1218,12 +1218,10 @@ class Pipeline:
         all_piece_idxs = batch_encode_pieces(wordpiece_splitter, all_pieces, max_input_length)
         assert len(all_raw) == len(all_keys) == len(all_piece_idxs)
 
-        # Phase 4: Build Instance namedtuples (padding + labels)
+        # Phase 4: Build Instance namedtuples (collate_fn handles bucketed padding)
         all_instances = []
         for inst, piece_idxs in zip(all_raw, all_piece_idxs):
-            pad_num = max_input_length - len(piece_idxs)
-            attn_masks = [1] * len(piece_idxs) + [0] * pad_num
-            piece_idxs = piece_idxs + [0] * pad_num
+            attn_masks = [1] * len(piece_idxs)
             wordpieces = inst['wordpieces']
             token_type_idxs = [
                 -100 if pid >= len(wordpieces) else inst['wordpiece_labels'][pid]

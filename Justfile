@@ -74,6 +74,10 @@ verify: test (bench)
 bench-compare ref="HEAD" *args="":
     {{python}} trankit/tests/bench_compare.py {{ref}} {{args}}
 
+# run batch parity tests
+test-parity:
+    {{python}} trankit/tests/test_batch_parity.py
+
 # run stacked adapter tests
 test-stacked:
     {{python}} -m pytest trankit/tests/test_stacked_adapters.py -v
