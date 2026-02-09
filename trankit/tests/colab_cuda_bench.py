@@ -13,10 +13,13 @@ BENCHMARK_RUNS = 10
 PROFILE = True       # Set to True to collect cProfile stats
 BYPASS_ADAPTER_RESET = True  # Set to False to benchmark without the bypass
 STRIP_LORA = True            # Set to False to keep LoRA wrappers (no-op overhead)
+PATCH_ADAPTER_OVERHEAD = True  # Set to False to skip adapter composition monkey-patches
+PIN_MEMORY = None              # None = auto (True on CUDA), set False to test without
 
 import os
 os.environ['TRANKIT_BYPASS_ADAPTER_RESET'] = '1' if BYPASS_ADAPTER_RESET else '0'
 os.environ['TRANKIT_STRIP_LORA'] = '1' if STRIP_LORA else '0'
+os.environ['TRANKIT_PATCH_ADAPTER_OVERHEAD'] = '1' if PATCH_ADAPTER_OVERHEAD else '0'
 
 # ── 1. Check CUDA ────────────────────────────────────────────
 import torch
@@ -173,12 +176,14 @@ print(f"Trankit CUDA Benchmark — {EMBEDDING} (adapter-caching)")
 print(f"trankit: {_trankit_ver} commit {_commit}")
 print(f"Warmup: {WARMUP_RUNS} | Runs: {BENCHMARK_RUNS}")
 print(f"cache_adapters: {CACHE_ADAPTERS} | fp16: {FP16} | cpu_lemma: {CPU_LEMMA}")
-print(f"bypass_adapter_reset: {BYPASS_ADAPTER_RESET} | profile: {PROFILE}")
+print(f"bypass_adapter_reset: {BYPASS_ADAPTER_RESET} | strip_lora: {STRIP_LORA} | patch_adapter_overhead: {PATCH_ADAPTER_OVERHEAD}")
+print(f"pin_memory: {PIN_MEMORY}")
+print(f"profile: {PROFILE}")
 print(f"{'=' * 70}\n")
 
 torch.cuda.empty_cache()
 t0 = time.perf_counter()
-p = Pipeline("english", gpu=True, cache_dir="./cache", embedding=EMBEDDING, fp16=FP16, cpu_lemma=CPU_LEMMA, cache_adapters=CACHE_ADAPTERS)
+p = Pipeline("english", gpu=True, cache_dir="./cache", embedding=EMBEDDING, fp16=FP16, cpu_lemma=CPU_LEMMA, cache_adapters=CACHE_ADAPTERS, pin_memory=PIN_MEMORY)
 init_time = time.perf_counter() - t0
 device_type = str(p._config.device.type)
 print(f"Device: {device_type}")
@@ -242,6 +247,9 @@ with open(json_path, "w") as f:
         "fp16": FP16,
         "cpu_lemma": CPU_LEMMA,
         "bypass_adapter_reset": BYPASS_ADAPTER_RESET,
+        "strip_lora": STRIP_LORA,
+        "patch_adapter_overhead": PATCH_ADAPTER_OVERHEAD,
+        "pin_memory": PIN_MEMORY,
         "warmup_runs": WARMUP_RUNS,
         "benchmark_runs": BENCHMARK_RUNS,
         "init_time_sec": round(init_time, 2),

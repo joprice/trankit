@@ -188,7 +188,7 @@ def is_list_list_strings(input):
 
 class Pipeline:
     def __init__(self, lang, cache_dir=None, gpu=True, embedding='xlm-roberta-base',
-                 cpu_lemma=None, fp16=None, cache_adapters=False):
+                 cpu_lemma=None, fp16=None, cache_adapters=False, pin_memory=None):
         super(Pipeline, self).__init__()
         # auto detection of lang
         if lang == 'auto':
@@ -209,6 +209,9 @@ class Pipeline:
         self._ud_eval = False
         self._setup_config(lang)
         self._config.training = False
+        # pin_memory: auto-enabled on CUDA, override with explicit bool
+        if pin_memory is not None:
+            self._pin_memory = pin_memory
         # CPU lemma decode avoids per-step GPU→CPU sync; auto-enable on MPS
         if cpu_lemma is None:
             self._cpu_lemma = (self._config.device.type == 'mps')
