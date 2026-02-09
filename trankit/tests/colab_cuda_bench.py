@@ -11,6 +11,14 @@ CPU_LEMMA = False    # Set to True to move seq2seq lemma decoder to CPU
 WARMUP_RUNS = 2
 BENCHMARK_RUNS = 10
 PROFILE = True       # Set to True to collect cProfile stats
+TORCH_PROFILE = False  # Set to True to collect torch.profiler traces
+TORCH_PROFILE_TASKS = ["full pipeline (long)"]  # Task labels to profile; [] means all
+TORCH_PROFILE_RECORD_SHAPES = True
+TORCH_PROFILE_WITH_STACK = False
+TORCH_PROFILE_WAIT = 1
+TORCH_PROFILE_WARMUP = 1
+TORCH_PROFILE_ACTIVE = 2
+TORCH_PROFILE_REPEAT = 1
 BYPASS_ADAPTER_RESET = True  # Set to False to benchmark without the bypass
 STRIP_LORA = True            # Set to False to keep LoRA wrappers (no-op overhead)
 PATCH_ADAPTER_OVERHEAD = True  # Set to False to skip adapter composition monkey-patches
@@ -57,6 +65,9 @@ import pstats
 import time
 import statistics
 import json
+from torch.profiler import profile as torch_profile, ProfilerActivity
+from torch.profiler import schedule as torch_profiler_schedule
+from torch.autograd.profiler import record_function
 from trankit import Pipeline
 
 REPORT_PATH = "cuda_benchmark_report.txt"
@@ -110,6 +121,7 @@ def gpu_mb():
 
 
 profiler = cProfile.Profile() if PROFILE else None
+torch_profile_artifacts = []
 
 
 def benchmark_task(fn, text, label, runs=BENCHMARK_RUNS, warmup=WARMUP_RUNS):
@@ -120,18 +132,60 @@ def benchmark_task(fn, text, label, runs=BENCHMARK_RUNS, warmup=WARMUP_RUNS):
         num_tokens = count_tokens(result)
         num_sentences = count_sentences(result)
 
-        if profiler is not None:
-            profiler.enable()
         times = []
-        for _ in range(runs):
-            torch.cuda.synchronize()
-            start = time.perf_counter()
-            fn(text)
-            torch.cuda.synchronize()
-            elapsed = time.perf_counter() - start
-            times.append(elapsed)
-        if profiler is not None:
-            profiler.disable()
+        enable_torch_profile = TORCH_PROFILE and (not TORCH_PROFILE_TASKS or label in TORCH_PROFILE_TASKS)
+        if enable_torch_profile:
+            safe_label = label.lower().replace(" ", "_").replace("(", "").replace(")", "")
+            trace_path = f"torch_profile_{safe_label}.json"
+            # Clamp active steps to available runs so we always capture something.
+            active_steps = max(1, min(TORCH_PROFILE_ACTIVE, runs))
+            wait_steps = min(TORCH_PROFILE_WAIT, max(0, runs - active_steps))
+            warmup_steps = min(TORCH_PROFILE_WARMUP, max(0, runs - active_steps - wait_steps))
+            with torch_profile(
+                activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+                record_shapes=TORCH_PROFILE_RECORD_SHAPES,
+                with_stack=TORCH_PROFILE_WITH_STACK,
+                schedule=torch_profiler_schedule(
+                    wait=wait_steps,
+                    warmup=warmup_steps,
+                    active=active_steps,
+                    repeat=TORCH_PROFILE_REPEAT,
+                ),
+            ) as tprof:
+                if profiler is not None:
+                    profiler.enable()
+                for _ in range(runs):
+                    torch.cuda.synchronize()
+                    start = time.perf_counter()
+                    with record_function(f"task:{label}"):
+                        torch.cuda.nvtx.range_push(f"task:{label}")
+                        try:
+                            fn(text)
+                        finally:
+                            torch.cuda.nvtx.range_pop()
+                    torch.cuda.synchronize()
+                    elapsed = time.perf_counter() - start
+                    times.append(elapsed)
+                    tprof.step()
+                if profiler is not None:
+                    profiler.disable()
+            tprof.export_chrome_trace(trace_path)
+            key_avg = tprof.key_averages().table(sort_by="self_cuda_time_total", row_limit=40)
+            print(f"\n[torch.profiler] {label} top ops (self_cuda_time_total):\n{key_avg}")
+            print(f"[torch.profiler] Trace saved to: {trace_path}\n")
+            torch_profile_artifacts.append({"task": label, "trace_path": trace_path})
+        else:
+            if profiler is not None:
+                profiler.enable()
+            for _ in range(runs):
+                torch.cuda.synchronize()
+                start = time.perf_counter()
+                fn(text)
+                torch.cuda.synchronize()
+                elapsed = time.perf_counter() - start
+                times.append(elapsed)
+            if profiler is not None:
+                profiler.disable()
 
     mean_t = statistics.mean(times)
     stdev_t = statistics.stdev(times) if len(times) > 1 else 0.0
@@ -179,6 +233,12 @@ print(f"cache_adapters: {CACHE_ADAPTERS} | fp16: {FP16} | cpu_lemma: {CPU_LEMMA}
 print(f"bypass_adapter_reset: {BYPASS_ADAPTER_RESET} | strip_lora: {STRIP_LORA} | patch_adapter_overhead: {PATCH_ADAPTER_OVERHEAD}")
 print(f"pin_memory: {PIN_MEMORY}")
 print(f"profile: {PROFILE}")
+print(f"torch_profile: {TORCH_PROFILE} | tasks: {TORCH_PROFILE_TASKS if TORCH_PROFILE_TASKS else 'all'}")
+if TORCH_PROFILE:
+    print(
+        f"torch_profile_schedule: wait={TORCH_PROFILE_WAIT}, "
+        f"warmup={TORCH_PROFILE_WARMUP}, active={TORCH_PROFILE_ACTIVE}, repeat={TORCH_PROFILE_REPEAT}"
+    )
 print(f"{'=' * 70}\n")
 
 torch.cuda.empty_cache()
@@ -233,6 +293,13 @@ if profiler is not None:
     ps.strip_dirs().sort_stats("cumtime").print_stats(40)
     print(stream.getvalue())
 
+if torch_profile_artifacts:
+    print(f"\n{'=' * 70}")
+    print("torch.profiler artifacts")
+    print(f"{'=' * 70}")
+    for a in torch_profile_artifacts:
+        print(f"{a['task']}: {a['trace_path']}")
+
 # ── 7. Save ──────────────────────────────────────────────────
 gpu_name = torch.cuda.get_device_name(0).replace(" ", "-")
 suffix = "_cpulemma" if CPU_LEMMA else ""
@@ -250,6 +317,9 @@ with open(json_path, "w") as f:
         "strip_lora": STRIP_LORA,
         "patch_adapter_overhead": PATCH_ADAPTER_OVERHEAD,
         "pin_memory": PIN_MEMORY,
+        "torch_profile": TORCH_PROFILE,
+        "torch_profile_tasks": TORCH_PROFILE_TASKS,
+        "torch_profile_artifacts": torch_profile_artifacts,
         "warmup_runs": WARMUP_RUNS,
         "benchmark_runs": BENCHMARK_RUNS,
         "init_time_sec": round(init_time, 2),

@@ -15,7 +15,11 @@ from .utils.chuliu_edmonds import *
 from adapters.loading import AdapterLoader
 from adapters import AdapterConfig, Stack
 from adapters.composition import parse_composition
-from contextlib import nullcontext
+from .stacked_adapter import (
+    StackedAdapterRegistry, install_stacked_adapters,
+    extract_adapter_weights,
+)
+from contextlib import contextmanager
 from datetime import datetime
 import langid
 import re
@@ -26,8 +30,16 @@ import os
 _BYPASS_ADAPTER_RESET = os.environ.get('TRANKIT_BYPASS_ADAPTER_RESET', '1') == '1'
 _STRIP_LORA = os.environ.get('TRANKIT_STRIP_LORA', '1') == '1'
 _PATCH_ADAPTER_OVERHEAD = os.environ.get('TRANKIT_PATCH_ADAPTER_OVERHEAD', '1') == '1'
+_STACKED_ADAPTERS = os.environ.get('TRANKIT_STACKED_ADAPTERS', '1') == '1'
 
 from transformers import XLMRobertaTokenizerFast
+
+
+@contextmanager
+def _inference_context(autocast_ctx):
+    """Stack torch.inference_mode() with an autocast context."""
+    with torch.inference_mode(), autocast_ctx:
+        yield
 
 TRANKIT_QUIET = os.environ.get("TRANKIT_QUIET", "").lower() in ("1", "true", "yes")
 
@@ -188,7 +200,8 @@ def is_list_list_strings(input):
 
 class Pipeline:
     def __init__(self, lang, cache_dir=None, gpu=True, embedding='xlm-roberta-base',
-                 cpu_lemma=None, fp16=None, cache_adapters=False, pin_memory=None):
+                 cpu_lemma=None, fp16=None, cache_adapters=False, pin_memory=None,
+                 stacked_adapters=False):
         super(Pipeline, self).__init__()
         # auto detection of lang
         if lang == 'auto':
@@ -224,9 +237,9 @@ class Pipeline:
             self._fp16 = fp16
         device_type = self._config.device.type
         if self._fp16 and device_type in ('cuda', 'cpu'):
-            self._autocast = lambda: torch.autocast(device_type, dtype=torch.float16)
+            self._autocast = lambda: _inference_context(torch.autocast(device_type, dtype=torch.float16))
         else:
-            self._autocast = nullcontext
+            self._autocast = lambda: torch.inference_mode()
 
         self.added_langs = [lang]
         assert lang in lang2treebank, f'{lang} has not been supported. Currently supported languages: {list(lang2treebank.keys())}'
@@ -255,6 +268,18 @@ class Pipeline:
             _patch_adapter_overhead()
         # for loading & auto-converting adapter weights
         self._adapter_loader = AdapterLoader(self._embedding_layers.xlmr, "text_task")
+
+        # stacked_adapters implies cache_adapters
+        if stacked_adapters and not _STACKED_ADAPTERS:
+            if not TRANKIT_QUIET:
+                print("Stacked adapters disabled via TRANKIT_STACKED_ADAPTERS=0, using cache_adapters")
+            stacked_adapters = False
+            cache_adapters = True
+        if stacked_adapters:
+            cache_adapters = True
+        self._stacked_adapters = stacked_adapters
+        self._stacked_registry = None  # deferred until first adapter extraction
+        self._stacked_installed = False
 
         self._cache_adapters = cache_adapters
         if cache_adapters:
@@ -299,6 +324,14 @@ class Pipeline:
             if self._use_half:
                 self._ner_model[lang].half()
             self._ner_model[lang].eval()
+
+        # Disable gradient tracking for all inference-only parameters.
+        # This avoids building autograd graphs on every forward pass.
+        self._embedding_layers.requires_grad_(False)
+        for classifier_dict in (self._tokenizer, self._tagger, self._ner_model):
+            for m in classifier_dict.values():
+                if isinstance(m, torch.nn.Module):
+                    m.requires_grad_(False)
 
         # load and hold the pretrained weights
         self._embedding_weights = self._embedding_layers.state_dict()
@@ -471,6 +504,7 @@ class Pipeline:
         if self._use_half:
             self._tokenizer[lang].half()
         self._tokenizer[lang].eval()
+        self._tokenizer[lang].requires_grad_(False)
 
         # add tagger
         self._tagger[lang] = PosDepClassifier(self._config, treebank_name=lang2treebank[lang])
@@ -478,6 +512,7 @@ class Pipeline:
         if self._use_half:
             self._tagger[lang].half()
         self._tagger[lang].eval()
+        self._tagger[lang].requires_grad_(False)
 
         # mwt if available
         treebank_name = lang2treebank[lang]
@@ -494,6 +529,7 @@ class Pipeline:
             if self._use_half:
                 self._ner_model[lang].half()
             self._ner_model[lang].eval()
+            self._ner_model[lang].requires_grad_(False)
 
         self.added_langs.append(lang)
 
@@ -520,6 +556,57 @@ class Pipeline:
     def _load_adapter_weights(self, model_name):
         assert model_name in ['tokenizer', 'tagger', 'ner']
         current_lang = self._config.active_lang
+
+        if self._stacked_adapters:
+            slot_name = _adapter_slot_name(model_name, current_lang)
+
+            if self._stacked_registry is not None and self._stacked_registry.has_slot(slot_name):
+                # Warm path: just set index
+                self._stacked_registry.set_active(slot_name)
+                return
+
+            # Cold: load via adapters lib, extract, register, delete
+            xlmr = self._embedding_layers.xlmr
+            # Guard: if a prior cold load failed after add_adapter but before
+            # delete_adapter, the slot is stale — delete it before re-adding.
+            if slot_name in xlmr.adapters_config.adapters:
+                xlmr.delete_adapter(slot_name)
+            xlmr.add_adapter(slot_name, config=self._adapter_config)
+
+            if model_name == 'tokenizer':
+                pretrained_weights = self._tokenizer[current_lang].pretrained_tokenizer_weights
+            elif model_name == 'tagger':
+                pretrained_weights = self._tagger[current_lang].pretrained_tagger_weights
+            else:
+                pretrained_weights = self._ner_model[current_lang].pretrained_ner_weights
+
+            self._adapter_loader.load_from_state_dict(
+                pretrained_weights, model_name, load_as=slot_name, start_prefix="xlmr."
+            )
+            xlmr.to(self._config.device)
+            if self._use_half:
+                xlmr.half()
+
+            # Extract via direct module access (validates config per instance)
+            weights_per_layer, hs, bn = extract_adapter_weights(xlmr, slot_name)
+
+            # Deferred install: first extraction determines real dimensions
+            if not self._stacked_installed:
+                stacked_layers = install_stacked_adapters(xlmr, hs, bn)
+                self._stacked_registry = StackedAdapterRegistry(stacked_layers)
+                self._stacked_installed = True
+                if not TRANKIT_QUIET:
+                    print(f"Stacked adapters installed: {hs}x{bn}, "
+                          f"{len(stacked_layers)} layers")
+
+            self._stacked_registry.register(slot_name, weights_per_layer)
+
+            # Free the adapters-library copy
+            xlmr.delete_adapter(slot_name)
+
+            # Set active
+            self._stacked_registry.set_active(slot_name)
+            return
 
         if self._cache_adapters:
             # Per-language adapter slots: zero-cost warm switch
@@ -585,8 +672,11 @@ class Pipeline:
         """Remove per-language adapter slots from XLM-R, freeing device memory.
 
         Call this when evicting a language from an LRU cache.
-        No-op when cache_adapters=False or no adapters for this language are loaded.
+        No-op when cache_adapters=False or stacked_adapters=True
+        (stacked weights are cheap to keep).
         """
+        if self._stacked_adapters:
+            return
         if not self._cache_adapters:
             return
         xlmr = self._embedding_layers.xlmr
@@ -598,6 +688,37 @@ class Pipeline:
                     self._active_slot = None  # invalidate: evicted adapter may have been active
                 xlmr.delete_adapter(slot_name)
                 self._resident_adapters.discard(slot_name)
+
+    def compile_model(self, mode="reduce-overhead", dynamic=True):
+        """Freeze stacked adapters and compile the encoder.
+
+        Call after all languages are added and loaded.
+
+        Only the encoder (XLM-R + stacked adapters) is compiled. Classifier
+        heads contain graph breaks (viterbi CRF decode, word_lens_to_idxs_fast,
+        .tolist()) and are left eager.
+
+        Args:
+            mode: torch.compile mode. "reduce-overhead" (default) minimizes
+                  latency via CUDA graphs. "max-autotune" tries more kernel
+                  variants. See torch.compile docs.
+            dynamic: If True (default), allows variable sequence lengths
+                     without recompilation.
+
+        Diagnose graph breaks / recompiles with:
+            TORCH_LOGS=graph_breaks,recompiles python your_script.py
+        """
+        if not self._stacked_adapters:
+            raise RuntimeError("compile_model() requires stacked_adapters=True")
+        if self._stacked_registry is None:
+            raise RuntimeError(
+                "compile_model() called before any adapters were loaded. "
+                "Run at least one inference call or _load_adapter_weights() first."
+            )
+        self._stacked_registry.freeze()
+        self._embedding_layers.xlmr = torch.compile(
+            self._embedding_layers.xlmr, mode=mode, dynamic=dynamic
+        )
 
     def _detect_lang_and_switch(self, text):
         detected_code = langid.classify(text)[0]
@@ -635,22 +756,23 @@ class Pipeline:
 
         # make predictions
         wordpiece_pred_labels, wordpiece_ends, paragraph_indexes = [], [], []
-        for batch in DataLoader(test_set, batch_size=eval_batch_size,
-                                shuffle=False, collate_fn=test_set.collate_fn,
-                                pin_memory=self._pin_memory):
-            batch = batch_to_device(batch, self._config.device, non_blocking=self._non_blocking)
-            wordpiece_reprs = self._embedding_layers.get_tokenizer_inputs(batch)
-            predictions = self._tokenizer[self._config.active_lang].predict(batch, wordpiece_reprs)
-            wp_pred_labels, wp_ends, para_ids = predictions[0], predictions[1], predictions[2]
-            wp_pred_labels = wp_pred_labels.detach().cpu().tolist()
+        with torch.inference_mode():
+            for batch in DataLoader(test_set, batch_size=eval_batch_size,
+                                    shuffle=False, collate_fn=test_set.collate_fn,
+                                    pin_memory=self._pin_memory):
+                batch = batch_to_device(batch, self._config.device, non_blocking=self._non_blocking)
+                wordpiece_reprs = self._embedding_layers.get_tokenizer_inputs(batch)
+                predictions = self._tokenizer[self._config.active_lang].predict(batch, wordpiece_reprs)
+                wp_pred_labels, wp_ends, para_ids = predictions[0], predictions[1], predictions[2]
+                wp_pred_labels = wp_pred_labels.detach().cpu().tolist()
 
-            wordpiece_pred_labels.extend(
-                wp_labels[:len(wp_end_positions)] for wp_labels, wp_end_positions in zip(wp_pred_labels, wp_ends)
-            )
+                wordpiece_pred_labels.extend(
+                    wp_labels[:len(wp_end_positions)] for wp_labels, wp_end_positions in zip(wp_pred_labels, wp_ends)
+                )
 
-            wordpiece_ends.extend(wp_ends)
-            paragraph_indexes.extend(para_ids)
-    
+                wordpiece_ends.extend(wp_ends)
+                paragraph_indexes.extend(para_ids)
+
         # mapping
         para_id_to_wp_pred_labels = defaultdict(list)
 

@@ -23,12 +23,14 @@ import torch
 import trankit
 
 
-def _pipeline_kwargs(embedding, gpu, cache_adapters, fp16=None, cpu_lemma=None):
+def _pipeline_kwargs(embedding, gpu, cache_adapters, fp16=None, cpu_lemma=None, stacked_adapters=False):
     """Build Pipeline constructor kwargs, skipping unsupported params for upstream."""
     kwargs = {"embedding": embedding, "gpu": gpu}
     sig = inspect.signature(trankit.Pipeline.__init__)
     if "cache_adapters" in sig.parameters:
         kwargs["cache_adapters"] = cache_adapters
+    if stacked_adapters and "stacked_adapters" in sig.parameters:
+        kwargs["stacked_adapters"] = stacked_adapters
     if fp16 is not None and "fp16" in sig.parameters:
         kwargs["fp16"] = fp16
     if cpu_lemma is not None and "cpu_lemma" in sig.parameters:
@@ -197,7 +199,7 @@ def _get_git_sha():
         return None
 
 
-def _runtime_metadata(embedding, gpu, cache_adapters, mode, extra=None):
+def _runtime_metadata(embedding, gpu, cache_adapters, mode, extra=None, stacked_adapters=False):
     """Capture run metadata used to compare benchmarks reliably."""
     metadata = {
         "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -206,6 +208,7 @@ def _runtime_metadata(embedding, gpu, cache_adapters, mode, extra=None):
         "embedding": embedding,
         "gpu_requested": gpu,
         "cache_adapters": cache_adapters,
+        "stacked_adapters": stacked_adapters,
         "python_version": sys.version.split()[0],
         "platform": platform.platform(),
         "torch_version": torch.__version__,
@@ -223,7 +226,7 @@ def _runtime_metadata(embedding, gpu, cache_adapters, mode, extra=None):
     return metadata
 
 
-def run_benchmarks(embedding, gpu=True, profile_path=None, cache_adapters=True, fp16=None, cpu_lemma=None):
+def run_benchmarks(embedding, gpu=True, profile_path=None, cache_adapters=True, fp16=None, cpu_lemma=None, stacked_adapters=False):
     profiler = None
     if profile_path is not None:
         if profile_path == "":
@@ -238,14 +241,14 @@ def run_benchmarks(embedding, gpu=True, profile_path=None, cache_adapters=True, 
     print(f"Trankit Inference Benchmark")
     print(f"Embedding: {embedding}")
     print(f"Warmup runs: {WARMUP_RUNS}  |  Benchmark runs: {BENCHMARK_RUNS}")
-    print(f"cache_adapters: {cache_adapters}")
+    print(f"cache_adapters: {cache_adapters}  stacked_adapters: {stacked_adapters}")
     if profile_path:
         print(f"Profiling: ON (warmup/init excluded)")
     print(f"{'=' * 70}\n")
 
     print("Initializing pipeline...")
     t0 = time.perf_counter()
-    p = trankit.Pipeline("english", **_pipeline_kwargs(embedding, gpu, cache_adapters, fp16=fp16, cpu_lemma=cpu_lemma))
+    p = trankit.Pipeline("english", **_pipeline_kwargs(embedding, gpu, cache_adapters, fp16=fp16, cpu_lemma=cpu_lemma, stacked_adapters=stacked_adapters))
     init_time = time.perf_counter() - t0
     device_type = str(p._config.device.type)
     print(f"Pipeline initialized in {init_time:.2f}s (device: {device_type})\n")
@@ -293,6 +296,7 @@ def run_benchmarks(embedding, gpu=True, profile_path=None, cache_adapters=True, 
                     embedding=embedding,
                     gpu=gpu,
                     cache_adapters=cache_adapters,
+                    stacked_adapters=stacked_adapters,
                     mode="micro",
                     extra={
                         "profile_path": profile_path,
@@ -321,7 +325,8 @@ def run_throughput_benchmark(embedding, gpu=True, cache_adapters=True,
                              num_docs=1000, target_words=300,
                              task="full", langs=None,
                              warmup=5, profile_path=None,
-                             batch_size=None, fp16=None, cpu_lemma=None):
+                             batch_size=None, fp16=None, cpu_lemma=None,
+                             stacked_adapters=False):
     profiler = None
     if profile_path is not None:
         if profile_path == "":
@@ -336,7 +341,7 @@ def run_throughput_benchmark(embedding, gpu=True, cache_adapters=True,
 
     print(f"\n{'=' * 70}")
     print(f"Trankit Throughput Benchmark")
-    print(f"Embedding: {embedding} | cache_adapters: {cache_adapters}")
+    print(f"Embedding: {embedding} | cache_adapters: {cache_adapters} | stacked_adapters: {stacked_adapters}")
     print(f"Task: {task} pipeline | Documents: {num_docs} | ~{target_words} words/doc")
     if batch_size:
         print(f"Batch size: {batch_size} (stage-level batching)")
@@ -349,7 +354,7 @@ def run_throughput_benchmark(embedding, gpu=True, cache_adapters=True,
     # 1. Initialize pipeline
     print("Initializing pipeline...")
     t0 = time.perf_counter()
-    p = trankit.Pipeline(first_lang, **_pipeline_kwargs(embedding, gpu, cache_adapters, fp16=fp16, cpu_lemma=cpu_lemma))
+    p = trankit.Pipeline(first_lang, **_pipeline_kwargs(embedding, gpu, cache_adapters, fp16=fp16, cpu_lemma=cpu_lemma, stacked_adapters=stacked_adapters))
     init_time = time.perf_counter() - t0
     device_type = str(p._config.device.type)
     print(f"Pipeline initialized in {init_time:.2f}s (device: {device_type})")
@@ -483,6 +488,7 @@ def run_throughput_benchmark(embedding, gpu=True, cache_adapters=True,
                     embedding=embedding,
                     gpu=gpu,
                     cache_adapters=cache_adapters,
+                    stacked_adapters=stacked_adapters,
                     mode="throughput",
                     extra={
                         "profile_path": profile_path,
@@ -534,6 +540,7 @@ if __name__ == "__main__":
     embedding = args[0] if args else "xlm-roberta-base"
     gpu = "--cpu" not in flags
     cache_adapters = "--no-cache-adapters" not in flags
+    stacked_adapters = "--stacked" in flags
     if "--fp16" in flags:
         fp16 = True
     elif "--no-fp16" in flags:
@@ -568,6 +575,7 @@ if __name__ == "__main__":
             task=task, langs=langs, warmup=warmup,
             profile_path=profile_path, batch_size=batch_size,
             fp16=fp16, cpu_lemma=cpu_lemma,
+            stacked_adapters=stacked_adapters,
         )
     else:
-        run_benchmarks(embedding, gpu=gpu, profile_path=profile_path, cache_adapters=cache_adapters, fp16=fp16, cpu_lemma=cpu_lemma)
+        run_benchmarks(embedding, gpu=gpu, profile_path=profile_path, cache_adapters=cache_adapters, fp16=fp16, cpu_lemma=cpu_lemma, stacked_adapters=stacked_adapters)

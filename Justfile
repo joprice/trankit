@@ -10,12 +10,13 @@ test:
     {{python}} trankit/tests/test_correctness.py
 
 # run benchmark on gpu (uses mps on mac, cuda otherwise)
-bench model="xlm-roberta-base":
-    {{python}} trankit/tests/test_benchmark.py {{model}}
+# pass --stacked to use stacked adapters
+bench model="xlm-roberta-base" *args="":
+    {{python}} trankit/tests/test_benchmark.py {{model}} {{args}}
 
 # run benchmark on cpu
-bench-cpu model="xlm-roberta-base":
-    {{python}} trankit/tests/test_benchmark.py {{model}} --cpu
+bench-cpu model="xlm-roberta-base" *args="":
+    {{python}} trankit/tests/test_benchmark.py {{model}} --cpu {{args}}
 
 # run all benchmark variants for base/large:
 # - local CPU
@@ -72,6 +73,10 @@ verify: test (bench)
 # compare current benchmark results against a git ref (default: HEAD)
 bench-compare ref="HEAD" *args="":
     {{python}} trankit/tests/bench_compare.py {{ref}} {{args}}
+
+# run stacked adapter tests
+test-stacked:
+    {{python}} -m pytest trankit/tests/test_stacked_adapters.py -v
 
 # quick smoke test on cpu
 test-cpu:

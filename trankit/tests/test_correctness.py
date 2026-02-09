@@ -67,12 +67,9 @@ def compare(a, b, path=""):
     return diffs
 
 
-def run_validation():
-    with open(BASELINE_PATH) as f:
-        baseline = json.load(f)
-
-    p = trankit.Pipeline("english", embedding="xlm-roberta-base")
-
+def _run_cases(p, baseline, label=""):
+    """Run test cases against baseline, return True if all pass."""
+    prefix = f"[{label}] " if label else ""
     cases = {
         "full_doc": lambda: p(LONG_TEXT),
         "full_doc_short": lambda: p(SHORT_TEXT),
@@ -87,14 +84,28 @@ def run_validation():
             result = fn()
             diffs = compare(result, baseline[name])
             if diffs:
-                print(f"FAIL: {name} - {len(diffs)} differences:")
+                print(f"FAIL: {prefix}{name} - {len(diffs)} differences:")
                 for d in diffs[:10]:
                     print(f"  {d}")
                 if len(diffs) > 10:
                     print(f"  ... and {len(diffs) - 10} more")
                 all_passed = False
             else:
-                print(f"PASS: {name}")
+                print(f"PASS: {prefix}{name}")
+    return all_passed
+
+
+def run_validation():
+    with open(BASELINE_PATH) as f:
+        baseline = json.load(f)
+
+    p = trankit.Pipeline("english", embedding="xlm-roberta-base")
+    all_passed = _run_cases(p, baseline, label="cached")
+
+    # Second pass: stacked_adapters mode
+    p_stacked = trankit.Pipeline("english", embedding="xlm-roberta-base", stacked_adapters=True)
+    if not _run_cases(p_stacked, baseline, label="stacked"):
+        all_passed = False
 
     if all_passed:
         print("\nAll correctness checks passed.")
