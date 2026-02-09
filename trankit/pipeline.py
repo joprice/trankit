@@ -26,6 +26,7 @@ import re
 import hashlib
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 def _has_hf_snapshot(cache_dir, model_name):
     """Check if a HuggingFace model is already cached locally.
@@ -41,6 +42,17 @@ _BYPASS_ADAPTER_RESET = os.environ.get('TRANKIT_BYPASS_ADAPTER_RESET', '1') == '
 _STRIP_LORA = os.environ.get('TRANKIT_STRIP_LORA', '1') == '1'
 _PATCH_ADAPTER_OVERHEAD = os.environ.get('TRANKIT_PATCH_ADAPTER_OVERHEAD', '1') == '1'
 _STACKED_ADAPTERS = os.environ.get('TRANKIT_STACKED_ADAPTERS', '1') == '1'
+def _parse_tok_prep_workers():
+    default = min(4, os.cpu_count() or 1)
+    val = os.environ.get('TRANKIT_TOK_PREP_WORKERS')
+    if val is None:
+        return default
+    try:
+        return max(1, int(val))
+    except (ValueError, TypeError):
+        return default
+
+_TOK_PREP_WORKERS = _parse_tok_prep_workers()
 
 from transformers import XLMRobertaTokenizerFast
 
@@ -1155,22 +1167,40 @@ class Pipeline:
         results = [[] for _ in docs]
 
         for i, doc_text in enumerate(docs):
-            if isinstance(doc_text, str) and doc_text.strip():
+            if not isinstance(doc_text, str):
+                raise TypeError(
+                    f"docs[{i}] must be str, got {type(doc_text).__name__}"
+                )
+            if doc_text.strip():
                 non_empty.append((i, doc_text))
 
         if not non_empty:
             return results
 
-        # Build per-doc datasets, assign (doc_id, local_idx) keys
+        # Build per-doc datasets in parallel (HF tokenizer releases GIL),
+        # then assign (doc_id, local_idx) keys on the main thread.
+        wordpiece_splitter = config.wordpiece_splitter
+
+        def _prepare_doc(doc_text):
+            ts = TokenizeDatasetLive(config, doc_text,
+                                     max_input_length=max_input_length)
+            ts.numberize(wordpiece_splitter)
+            return ts
+
+        doc_texts = [doc_text for _, doc_text in non_empty]
+        num_workers = min(_TOK_PREP_WORKERS, len(doc_texts))
+        if num_workers > 1:
+            with ThreadPoolExecutor(max_workers=num_workers) as pool:
+                test_sets = list(pool.map(_prepare_doc, doc_texts))
+        else:
+            test_sets = [_prepare_doc(t) for t in doc_texts]
+
         all_instances = []
         all_keys = []  # (doc_id, local_idx) for each instance
         orig_collate_fn = None
         expected_counts = []  # expected instance count per non-empty doc
 
-        for doc_id, (orig_idx, doc_text) in enumerate(non_empty):
-            test_set = TokenizeDatasetLive(config, doc_text,
-                                            max_input_length=max_input_length)
-            test_set.numberize(config.wordpiece_splitter)
+        for doc_id, test_set in enumerate(test_sets):
             if orig_collate_fn is None:
                 orig_collate_fn = test_set.collate_fn
             n = len(test_set)
@@ -1213,6 +1243,11 @@ class Pipeline:
 
         for doc_id, ((orig_idx, doc_text), doc_preds, expected) in enumerate(
                 zip(non_empty, per_doc_preds, expected_counts)):
+            if len(doc_preds) != expected:
+                raise RuntimeError(
+                    f"Doc {orig_idx}: expected {expected} predictions, "
+                    f"got {len(doc_preds)} — routing bug in merged forward pass"
+                )
             doc_preds.sort(key=lambda x: x[0])  # sort by local_idx
             preds = [p for _, p, _, _ in doc_preds]
             ends = [e for _, _, e, _ in doc_preds]
@@ -1240,7 +1275,7 @@ class Pipeline:
         all_doc_sents = self._tokenize_docs(docs)
         results = []
         for doc_text, sents in zip(docs, all_doc_sents):
-            if not isinstance(doc_text, str) or not doc_text.strip():
+            if not doc_text.strip():
                 results.append([])
             else:
                 results.append({TEXT: doc_text, SENTENCES: sents, LANG: self.active_lang})
