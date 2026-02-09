@@ -33,6 +33,17 @@ from .utils.tbinfo import tbname2training_id, tbname2tagbatchsize, langwithner
 
 
 _BATCH_TOKENIZE = os.environ.get('TRANKIT_BATCH_TOKENIZE', '1') == '1'
+_FUSE_TAGGER_NER = os.environ.get('TRANKIT_FUSE_TAGGER_NER', '1') == '1'
+
+_EVAL_BATCH_SIZE_OVERRIDE = None
+try:
+    _raw = os.environ.get('TRANKIT_EVAL_BATCH_SIZE')
+    if _raw is not None:
+        _val = int(_raw)
+        if _val > 0:
+            _EVAL_BATCH_SIZE_OVERRIDE = _val
+except (ValueError, TypeError):
+    pass
 
 
 def batch_process(pipeline, docs, skip_dict_seq2seq=None, batch_tokenize=None):
@@ -87,8 +98,7 @@ def batch_process(pipeline, docs, skip_dict_seq2seq=None, batch_tokenize=None):
         pipeline._last_batch_stage_times = stage_times
         return [{TEXT: doc_text, SENTENCES: [], LANG: active_lang} for doc_text in docs]
 
-    # ── Stage 2: POS tagging + dependency parsing (merged batch) ──────────
-    _t0 = time.perf_counter()
+    # ── Stage 2: POS tagging + dependency parsing (+ fused NER) ─────────
     tagger_test_set = TaggerDatasetLive(
         tokenized_doc=all_tokenized,
         wordpiece_splitter=config.wordpiece_splitter,
@@ -96,13 +106,25 @@ def batch_process(pipeline, docs, skip_dict_seq2seq=None, batch_tokenize=None):
     )
     tagger_test_set.numberize()
 
-    pipeline._load_adapter_weights(model_name='tagger')
-
-    eval_batch_size = tbname2tagbatchsize.get(config.treebank_name, pipeline._tagbatchsize)
-    if config.embedding_name == 'xlm-roberta-large':
-        eval_batch_size = int(eval_batch_size / 3)
+    if _EVAL_BATCH_SIZE_OVERRIDE is not None:
+        eval_batch_size = _EVAL_BATCH_SIZE_OVERRIDE
+    else:
+        eval_batch_size = tbname2tagbatchsize.get(config.treebank_name, pipeline._tagbatchsize)
+        if config.embedding_name == 'xlm-roberta-large':
+            eval_batch_size = int(eval_batch_size / 3)
 
     itos = config.itos[active_lang]
+
+    # Determine whether we can fuse NER into the tagger loop
+    can_fuse_ner = (
+        _FUSE_TAGGER_NER
+        and active_lang in langwithner
+        and tbname2training_id[config.treebank_name] % 2 == 0  # no MWT
+    )
+    ner_predictions = []  # deferred NER labels: (sentid, word_ids_0based, labels)
+
+    _t_tagger = 0.0
+    _t_ner_fused = 0.0
 
     with torch.inference_mode(), pipeline._autocast():
         for batch in DataLoader(tagger_test_set,
@@ -112,6 +134,9 @@ def batch_process(pipeline, docs, skip_dict_seq2seq=None, batch_tokenize=None):
             batch = batch_to_device(batch, config.device, non_blocking=pipeline._non_blocking)
             batch_size = len(batch.word_num)
 
+            # ── Tagger pass ──
+            _t0 = time.perf_counter()
+            pipeline._load_adapter_weights(model_name='tagger')
             word_reprs, cls_reprs = pipeline._embedding_layers.get_tagger_inputs(batch)
             predictions = pipeline._tagger[active_lang].predict(batch, word_reprs, cls_reprs)
 
@@ -142,47 +167,72 @@ def batch_process(pipeline, docs, skip_dict_seq2seq=None, batch_tokenize=None):
                     tagger_test_set.conllu_doc[sentid][wordid][DEPREL] = pred_tokens[bid][i][1]
 
             del predictions, sentlens, head_seqs, deprel_seqs, pred_tokens
+            _t_tagger += time.perf_counter() - _t0
+
+            # ── NER pass (fused: same batch tensor, different adapter) ──
+            if can_fuse_ner:
+                _t0 = time.perf_counter()
+                pipeline._load_adapter_weights(model_name='ner')
+                word_reprs_ner, _ = pipeline._embedding_layers.get_tagger_inputs(batch)
+                # batch.word_num is already a tensor (updated tagger collate_fn)
+                pred_labels = pipeline._ner_model[active_lang].predict(batch, word_reprs_ner)
+
+                for bid in range(batch_size):
+                    ner_predictions.append((
+                        batch.sent_index[bid],
+                        [wid - 1 for wid in batch.word_ids[bid]],
+                        pred_labels[bid],
+                    ))
+
+                del pred_labels, word_reprs_ner
+                _t_ner_fused += time.perf_counter() - _t0
 
     tagged_doc = get_output_doc(all_tokenized, tagger_test_set.conllu_doc)
-    stage_times['tagger'] = time.perf_counter() - _t0
+    stage_times['tagger'] = _t_tagger
 
     # ── Stage 3: Lemmatization (merged batch) ────────────────────────────
     _t0 = time.perf_counter()
     out = pipeline._lemmatize_doc(tagged_doc, skip_dict_seq2seq=skip_dict_seq2seq)
     stage_times['lemma'] = time.perf_counter() - _t0
 
-    # ── Stage 4: NER (merged batch, reusing tagger dataset) ──────────────
-    _t0 = time.perf_counter()
-    if active_lang in langwithner:
-        has_mwt = tbname2training_id[config.treebank_name] % 2 == 1
-        if has_mwt:
-            # MWT changes word structure; fall back to standard NER path
-            out = pipeline._ner_doc(out)
-        else:
-            # Fast path: reuse tagger-prepared data
-            ner_test_set = NERDatasetLive.from_tagger_data(config, tagger_test_set)
+    # ── Stage 4: NER ─────────────────────────────────────────────────────
+    if can_fuse_ner:
+        # Apply deferred NER labels from fused loop
+        for sentid, word_ids_0, labels in ner_predictions:
+            for i, wordid in enumerate(word_ids_0):
+                out[sentid][TOKENS][wordid][NER] = labels[i]
+        stage_times['ner'] = _t_ner_fused
+    else:
+        _t0 = time.perf_counter()
+        if active_lang in langwithner:
+            has_mwt = tbname2training_id[config.treebank_name] % 2 == 1
+            if has_mwt:
+                out = pipeline._ner_doc(out)
+            else:
+                # Fallback: separate NER DataLoader (fusion disabled)
+                ner_test_set = NERDatasetLive.from_tagger_data(config, tagger_test_set)
 
-            pipeline._load_adapter_weights(model_name='ner')
+                pipeline._load_adapter_weights(model_name='ner')
 
-            with torch.inference_mode(), pipeline._autocast():
-                for batch in DataLoader(ner_test_set,
-                                        batch_size=eval_batch_size,
-                                        shuffle=False, collate_fn=ner_test_set.collate_fn,
-                                        pin_memory=pipeline._pin_memory):
-                    batch = batch_to_device(batch, config.device, non_blocking=pipeline._non_blocking)
-                    word_reprs, cls_reprs = pipeline._embedding_layers.get_tagger_inputs(batch)
-                    pred_entity_labels = pipeline._ner_model[active_lang].predict(batch, word_reprs)
+                with torch.inference_mode(), pipeline._autocast():
+                    for batch in DataLoader(ner_test_set,
+                                            batch_size=eval_batch_size,
+                                            shuffle=False, collate_fn=ner_test_set.collate_fn,
+                                            pin_memory=pipeline._pin_memory):
+                        batch = batch_to_device(batch, config.device, non_blocking=pipeline._non_blocking)
+                        word_reprs, cls_reprs = pipeline._embedding_layers.get_tagger_inputs(batch)
+                        pred_entity_labels = pipeline._ner_model[active_lang].predict(batch, word_reprs)
 
-                    batch_size = len(batch.word_num)
-                    for bid in range(batch_size):
-                        sentid = batch.sent_index[bid]
-                        for i in range(batch.word_num[bid]):
-                            wordid = batch.word_ids[bid][i]
-                            out[sentid][TOKENS][wordid][NER] = pred_entity_labels[bid][i]
+                        batch_size = len(batch.word_num)
+                        for bid in range(batch_size):
+                            sentid = batch.sent_index[bid]
+                            for i in range(batch.word_num[bid]):
+                                wordid = batch.word_ids[bid][i]
+                                out[sentid][TOKENS][wordid][NER] = pred_entity_labels[bid][i]
 
-                    del pred_entity_labels
+                        del pred_entity_labels
 
-    stage_times['ner'] = time.perf_counter() - _t0
+        stage_times['ner'] = time.perf_counter() - _t0
 
     # Store stage timing on the pipeline for external access
     pipeline._last_batch_stage_times = stage_times

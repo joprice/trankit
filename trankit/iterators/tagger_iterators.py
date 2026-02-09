@@ -189,7 +189,7 @@ class TaggerDatasetLive(Dataset):
             sent_index=batch_sent_index,
             word_ids=batch_word_ids,
             words=batch_words,
-            word_num=batch_word_num,
+            word_num=torch.tensor(batch_word_num, dtype=torch.long),
             piece_idxs=torch.from_numpy(piece_idxs),
             attention_masks=torch.from_numpy(attn_masks),
             word_lens=batch_word_lens,

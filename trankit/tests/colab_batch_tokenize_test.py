@@ -372,6 +372,72 @@ if stage_accum:
 
 print(f"\n{'=' * 70}")
 
+# ── 6c. Batch size sweep for long/full merged ─────────────────
+print("\nBATCH SIZE SWEEP: long/full merged (TRANKIT_EVAL_BATCH_SIZE)")
+print("=" * 70)
+
+sweep_doc = make_document(300)
+sweep_docs = [sweep_doc] * NUM_DOCS
+SWEEP_BATCH_SIZES = [8, 16, 24, 32]
+
+sweep_header = (f"{'EvalBS':>7s} {'docs/s':>7s} {'mean':>8s} {'p95':>8s} "
+                f"{'GPU%':>6s} {'VRAM':>7s}")
+print(sweep_header)
+print("-" * len(sweep_header))
+
+sweep_results = []
+
+for ebs in SWEEP_BATCH_SIZES:
+    os.environ['TRANKIT_EVAL_BATCH_SIZE'] = str(ebs)
+    # Reload the module-level override
+    import trankit.batch_pipeline as _bp
+    _bp._EVAL_BATCH_SIZE_OVERRIDE = ebs
+
+    # Warmup
+    with torch.inference_mode():
+        for _ in range(3):
+            _bp.batch_process(p, sweep_docs[:5], batch_tokenize=True)
+        torch.cuda.synchronize()
+
+    monitor = GpuMonitor()
+    times = []
+
+    with torch.inference_mode():
+        monitor.start()
+        for i in range(0, NUM_DOCS, BATCH_SIZE):
+            chunk = sweep_docs[i:i + BATCH_SIZE]
+            torch.cuda.synchronize()
+            t0 = time.perf_counter()
+            _bp.batch_process(p, chunk, batch_tokenize=True)
+            torch.cuda.synchronize()
+            elapsed = time.perf_counter() - t0
+            per_doc = elapsed / len(chunk)
+            times.extend([per_doc] * len(chunk))
+        monitor.stop()
+
+    total = sum(times)
+    sorted_t = sorted(times)
+    gs = monitor.summary()
+
+    r = {
+        "eval_batch_size": ebs,
+        "docs_per_sec": round(NUM_DOCS / total, 2),
+        "mean_ms": round(statistics.mean(times) * 1000, 1),
+        "p95_ms": round(percentile(sorted_t, 95) * 1000, 1),
+        "gpu_mean_pct": gs.get("gpu_mean_pct", 0),
+        "mem_max_mb": gs.get("mem_max_mb", 0),
+    }
+    sweep_results.append(r)
+
+    print(f"{ebs:>7d} {r['docs_per_sec']:>7.1f} {r['mean_ms']:>7.0f}ms "
+          f"{r['p95_ms']:>7.0f}ms {r['gpu_mean_pct']:>5.0f}% {r['mem_max_mb']:>6d}MB")
+
+# Restore default
+os.environ.pop('TRANKIT_EVAL_BATCH_SIZE', None)
+_bp._EVAL_BATCH_SIZE_OVERRIDE = None
+
+print(f"\n{'=' * 70}")
+
 # ── 7. Save ──────────────────────────────────────────────────
 gpu_name = torch.cuda.get_device_name(0).replace(" ", "-")
 json_path = f"batch_tokenize_benchmark_{EMBEDDING.replace('/', '-')}_{gpu_name}.json"
@@ -385,6 +451,7 @@ with open(json_path, "w") as f:
         "batch_size": BATCH_SIZE,
         "warmup": WARMUP,
         "results": all_results,
+        "batch_size_sweep": sweep_results,
     }, f, indent=2)
 
 sys.stdout = _orig_stdout
