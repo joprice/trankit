@@ -39,17 +39,52 @@ class StackedPfeiffer(nn.Module):
         self._cur_down_b = self.down_bias[0]
         self._cur_up_w = self.up_weight[0]
         self._cur_up_b = self.up_bias[0]
+        # Dual-adapter mode: branch guard + second adapter views
+        self._dual_mode = False
+        self._dual_down_w = None
+        self._dual_down_b = None
+        self._dual_up_w = None
+        self._dual_up_b = None
 
     def forward(self, x):
         """x: [N, T, hidden_size] -> [N, T, hidden_size]."""
+        if self._dual_mode:
+            return self._forward_dual(x)
         down = F.relu(F.linear(x, self._cur_down_w, self._cur_down_b))
         return F.linear(down, self._cur_up_w, self._cur_up_b)
+
+    def _forward_dual(self, x):
+        """x: [2B, T, D]. First B uses primary adapter, second B uses secondary."""
+        if x.shape[0] % 2 != 0:
+            raise RuntimeError(
+                f"Dual adapter forward requires even batch size, got {x.shape[0]}"
+            )
+        B = x.shape[0] // 2
+        x_a, x_b = x[:B], x[B:]
+        down_a = F.relu(F.linear(x_a, self._cur_down_w, self._cur_down_b))
+        up_a = F.linear(down_a, self._cur_up_w, self._cur_up_b)
+        down_b = F.relu(F.linear(x_b, self._dual_down_w, self._dual_down_b))
+        up_b = F.linear(down_b, self._dual_up_w, self._dual_up_b)
+        return torch.cat([up_a, up_b], dim=0)
 
     def set_active(self, idx: int):
         self._cur_down_w = self.down_weight[idx]
         self._cur_down_b = self.down_bias[idx]
         self._cur_up_w = self.up_weight[idx]
         self._cur_up_b = self.up_bias[idx]
+        self._dual_mode = False
+
+    def set_dual_active(self, idx_a, idx_b):
+        """Set weights for dual mode. idx_a=first half, idx_b=second half."""
+        self._cur_down_w = self.down_weight[idx_a]
+        self._cur_down_b = self.down_bias[idx_a]
+        self._cur_up_w = self.up_weight[idx_a]
+        self._cur_up_b = self.up_bias[idx_a]
+        self._dual_down_w = self.down_weight[idx_b]
+        self._dual_down_b = self.down_bias[idx_b]
+        self._dual_up_w = self.up_weight[idx_b]
+        self._dual_up_b = self.up_bias[idx_b]
+        self._dual_mode = True
 
     def register_weights(self, idx, down_w, down_b, up_w, up_b):
         if self._frozen:
@@ -119,6 +154,16 @@ class StackedAdapterRegistry:
 
     def has_slot(self, slot_name):
         return slot_name in self.slot_to_idx
+
+    def set_dual_active(self, slot_name_a, slot_name_b):
+        idx_a = self.slot_to_idx[slot_name_a]
+        idx_b = self.slot_to_idx[slot_name_b]
+        for layer in self.layers:
+            layer.set_dual_active(idx_a, idx_b)
+
+    def exit_dual_mode(self):
+        for layer in self.layers:
+            layer._dual_mode = False
 
     def freeze(self):
         for layer in self.layers:

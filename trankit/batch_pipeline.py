@@ -34,6 +34,7 @@ from .utils.tbinfo import tbname2training_id, tbname2tagbatchsize, langwithner
 
 _BATCH_TOKENIZE = os.environ.get('TRANKIT_BATCH_TOKENIZE', '1') == '1'
 _FUSE_TAGGER_NER = os.environ.get('TRANKIT_FUSE_TAGGER_NER', '1') == '1'
+_DUAL_ADAPTER = os.environ.get('TRANKIT_DUAL_ADAPTER', '1') == '1'
 
 _EVAL_BATCH_SIZE_OVERRIDE = None
 try:
@@ -123,72 +124,160 @@ def batch_process(pipeline, docs, skip_dict_seq2seq=None, batch_tokenize=None):
     )
     ner_predictions = []  # deferred NER labels: (sentid, word_ids_0based, labels)
 
+    use_dual = (
+        _DUAL_ADAPTER
+        and can_fuse_ner
+        and pipeline._stacked_adapters
+        and pipeline._stacked_registry is not None
+    )
+
+    if use_dual:
+        pipeline._set_dual_adapters('tagger', 'ner')
+
+    _t_encoder_shared = 0.0
+    _t_tagger_head = 0.0
+    _t_ner_head = 0.0
     _t_tagger = 0.0
     _t_ner_fused = 0.0
 
-    with torch.inference_mode(), pipeline._autocast():
-        for batch in DataLoader(tagger_test_set,
-                                batch_size=eval_batch_size,
-                                shuffle=False, collate_fn=tagger_test_set.collate_fn,
-                                pin_memory=pipeline._pin_memory):
-            batch = batch_to_device(batch, config.device, non_blocking=pipeline._non_blocking)
-            batch_size = len(batch.word_num)
+    try:
+        with torch.inference_mode(), pipeline._autocast():
+            for batch in DataLoader(tagger_test_set,
+                                    batch_size=eval_batch_size,
+                                    shuffle=False, collate_fn=tagger_test_set.collate_fn,
+                                    pin_memory=pipeline._pin_memory):
+                batch = batch_to_device(batch, config.device, non_blocking=pipeline._non_blocking)
+                batch_size = len(batch.word_num)
 
-            # ── Tagger pass ──
-            _t0 = time.perf_counter()
-            pipeline._load_adapter_weights(model_name='tagger')
-            word_reprs, cls_reprs = pipeline._embedding_layers.get_tagger_inputs(batch)
-            predictions = pipeline._tagger[active_lang].predict(batch, word_reprs, cls_reprs)
+                if use_dual:
+                    # ── Single encoder pass with doubled batch ──
+                    _t0 = time.perf_counter()
+                    dual_piece_idxs = batch.piece_idxs.repeat(2, 1)
+                    dual_attn_masks = batch.attention_masks.repeat(2, 1)
+                    dual_word_lens = batch.word_lens + batch.word_lens
 
-            tag_stacked = torch.stack([predictions[0], predictions[1], predictions[2]]).detach().cpu().tolist()
-            predicted_upos, predicted_xpos, predicted_feats = tag_stacked
+                    word_reprs_dual, cls_reprs_dual = pipeline._embedding_layers.encode_words(
+                        dual_piece_idxs, dual_attn_masks, dual_word_lens
+                    )
+                    word_reprs = word_reprs_dual[:batch_size]
+                    cls_reprs = cls_reprs_dual[:batch_size]
+                    word_reprs_ner = word_reprs_dual[batch_size:]
+                    _t_encoder_shared += time.perf_counter() - _t0
 
-            predicted_dep = predictions[3]
-            dep_unlabeled = predicted_dep[0].cpu().numpy()
-            dep_labeled = predicted_dep[1].cpu().numpy()
-            sentlens = [l + 1 for l in batch.word_num]
-            head_seqs = [chuliu_edmonds_one_root(adj[:l, :l])[1:] for adj, l in
-                         zip(dep_unlabeled, sentlens)]
-            deprel_seqs = [
-                [itos[DEPREL][dep_labeled[i][j + 1][h]] for j, h in
-                 enumerate(hs)] for i, hs in enumerate(head_seqs)]
+                    # ── Tagger head ──
+                    _t0 = time.perf_counter()
+                    predictions = pipeline._tagger[active_lang].predict(
+                        batch, word_reprs, cls_reprs
+                    )
 
-            pred_tokens = [[[head_seqs[i][j], deprel_seqs[i][j]] for j in range(sentlens[i] - 1)] for i in
-                           range(batch_size)]
+                    tag_stacked = torch.stack([predictions[0], predictions[1], predictions[2]]).detach().cpu().tolist()
+                    predicted_upos, predicted_xpos, predicted_feats = tag_stacked
 
-            for bid in range(batch_size):
-                sentid = batch.sent_index[bid]
-                for i in range(batch.word_num[bid]):
-                    wordid = batch.word_ids[bid][i]
-                    tagger_test_set.conllu_doc[sentid][wordid][UPOS] = itos[UPOS][predicted_upos[bid][i]]
-                    tagger_test_set.conllu_doc[sentid][wordid][XPOS] = itos[XPOS][predicted_xpos[bid][i]]
-                    tagger_test_set.conllu_doc[sentid][wordid][FEATS] = itos[FEATS][predicted_feats[bid][i]]
-                    tagger_test_set.conllu_doc[sentid][wordid][HEAD] = int(pred_tokens[bid][i][0])
-                    tagger_test_set.conllu_doc[sentid][wordid][DEPREL] = pred_tokens[bid][i][1]
+                    predicted_dep = predictions[3]
+                    dep_unlabeled = predicted_dep[0].cpu().numpy()
+                    dep_labeled = predicted_dep[1].cpu().numpy()
+                    sentlens = [l + 1 for l in batch.word_num]
+                    head_seqs = [chuliu_edmonds_one_root(adj[:l, :l])[1:] for adj, l in
+                                 zip(dep_unlabeled, sentlens)]
+                    deprel_seqs = [
+                        [itos[DEPREL][dep_labeled[i][j + 1][h]] for j, h in
+                         enumerate(hs)] for i, hs in enumerate(head_seqs)]
 
-            del predictions, sentlens, head_seqs, deprel_seqs, pred_tokens
-            _t_tagger += time.perf_counter() - _t0
+                    pred_tokens = [[[head_seqs[i][j], deprel_seqs[i][j]] for j in range(sentlens[i] - 1)] for i in
+                                   range(batch_size)]
 
-            # ── NER pass (fused: same batch tensor, different adapter) ──
-            if can_fuse_ner:
-                _t0 = time.perf_counter()
-                pipeline._load_adapter_weights(model_name='ner')
-                word_reprs_ner, _ = pipeline._embedding_layers.get_tagger_inputs(batch)
-                # batch.word_num is already a tensor (updated tagger collate_fn)
-                pred_labels = pipeline._ner_model[active_lang].predict(batch, word_reprs_ner)
+                    for bid in range(batch_size):
+                        sentid = batch.sent_index[bid]
+                        for i in range(batch.word_num[bid]):
+                            wordid = batch.word_ids[bid][i]
+                            tagger_test_set.conllu_doc[sentid][wordid][UPOS] = itos[UPOS][predicted_upos[bid][i]]
+                            tagger_test_set.conllu_doc[sentid][wordid][XPOS] = itos[XPOS][predicted_xpos[bid][i]]
+                            tagger_test_set.conllu_doc[sentid][wordid][FEATS] = itos[FEATS][predicted_feats[bid][i]]
+                            tagger_test_set.conllu_doc[sentid][wordid][HEAD] = int(pred_tokens[bid][i][0])
+                            tagger_test_set.conllu_doc[sentid][wordid][DEPREL] = pred_tokens[bid][i][1]
 
-                for bid in range(batch_size):
-                    ner_predictions.append((
-                        batch.sent_index[bid],
-                        [wid - 1 for wid in batch.word_ids[bid]],
-                        pred_labels[bid],
-                    ))
+                    del predictions, sentlens, head_seqs, deprel_seqs, pred_tokens
+                    _t_tagger_head += time.perf_counter() - _t0
 
-                del pred_labels, word_reprs_ner
-                _t_ner_fused += time.perf_counter() - _t0
+                    # ── NER head (deferred) ──
+                    _t0 = time.perf_counter()
+                    pred_labels = pipeline._ner_model[active_lang].predict(
+                        batch, word_reprs_ner
+                    )
+
+                    for bid in range(batch_size):
+                        ner_predictions.append((
+                            batch.sent_index[bid],
+                            [wid - 1 for wid in batch.word_ids[bid]],
+                            pred_labels[bid],
+                        ))
+
+                    del pred_labels, word_reprs_ner, word_reprs_dual, cls_reprs_dual
+                    _t_ner_head += time.perf_counter() - _t0
+
+                else:
+                    # ── Two-pass path (fused or single tagger) ──
+                    _t0 = time.perf_counter()
+                    pipeline._load_adapter_weights(model_name='tagger')
+                    word_reprs, cls_reprs = pipeline._embedding_layers.get_tagger_inputs(batch)
+                    predictions = pipeline._tagger[active_lang].predict(batch, word_reprs, cls_reprs)
+
+                    tag_stacked = torch.stack([predictions[0], predictions[1], predictions[2]]).detach().cpu().tolist()
+                    predicted_upos, predicted_xpos, predicted_feats = tag_stacked
+
+                    predicted_dep = predictions[3]
+                    dep_unlabeled = predicted_dep[0].cpu().numpy()
+                    dep_labeled = predicted_dep[1].cpu().numpy()
+                    sentlens = [l + 1 for l in batch.word_num]
+                    head_seqs = [chuliu_edmonds_one_root(adj[:l, :l])[1:] for adj, l in
+                                 zip(dep_unlabeled, sentlens)]
+                    deprel_seqs = [
+                        [itos[DEPREL][dep_labeled[i][j + 1][h]] for j, h in
+                         enumerate(hs)] for i, hs in enumerate(head_seqs)]
+
+                    pred_tokens = [[[head_seqs[i][j], deprel_seqs[i][j]] for j in range(sentlens[i] - 1)] for i in
+                                   range(batch_size)]
+
+                    for bid in range(batch_size):
+                        sentid = batch.sent_index[bid]
+                        for i in range(batch.word_num[bid]):
+                            wordid = batch.word_ids[bid][i]
+                            tagger_test_set.conllu_doc[sentid][wordid][UPOS] = itos[UPOS][predicted_upos[bid][i]]
+                            tagger_test_set.conllu_doc[sentid][wordid][XPOS] = itos[XPOS][predicted_xpos[bid][i]]
+                            tagger_test_set.conllu_doc[sentid][wordid][FEATS] = itos[FEATS][predicted_feats[bid][i]]
+                            tagger_test_set.conllu_doc[sentid][wordid][HEAD] = int(pred_tokens[bid][i][0])
+                            tagger_test_set.conllu_doc[sentid][wordid][DEPREL] = pred_tokens[bid][i][1]
+
+                    del predictions, sentlens, head_seqs, deprel_seqs, pred_tokens
+                    _t_tagger += time.perf_counter() - _t0
+
+                    # ── NER pass (fused: same batch tensor, different adapter) ──
+                    if can_fuse_ner:
+                        _t0 = time.perf_counter()
+                        pipeline._load_adapter_weights(model_name='ner')
+                        word_reprs_ner, _ = pipeline._embedding_layers.get_tagger_inputs(batch)
+                        pred_labels = pipeline._ner_model[active_lang].predict(batch, word_reprs_ner)
+
+                        for bid in range(batch_size):
+                            ner_predictions.append((
+                                batch.sent_index[bid],
+                                [wid - 1 for wid in batch.word_ids[bid]],
+                                pred_labels[bid],
+                            ))
+
+                        del pred_labels, word_reprs_ner
+                        _t_ner_fused += time.perf_counter() - _t0
+    finally:
+        if use_dual:
+            pipeline._exit_dual_mode()
 
     tagged_doc = get_output_doc(all_tokenized, tagger_test_set.conllu_doc)
-    stage_times['tagger'] = _t_tagger
+    if use_dual:
+        stage_times['encoder_shared'] = _t_encoder_shared
+        stage_times['tagger'] = _t_tagger_head
+        stage_times['ner'] = _t_ner_head
+    else:
+        stage_times['tagger'] = _t_tagger
 
     # ── Stage 3: Lemmatization (merged batch) ────────────────────────────
     _t0 = time.perf_counter()
@@ -197,11 +286,12 @@ def batch_process(pipeline, docs, skip_dict_seq2seq=None, batch_tokenize=None):
 
     # ── Stage 4: NER ─────────────────────────────────────────────────────
     if can_fuse_ner:
-        # Apply deferred NER labels from fused loop
+        # Apply deferred NER labels from fused loop (both dual and two-pass)
         for sentid, word_ids_0, labels in ner_predictions:
             for i, wordid in enumerate(word_ids_0):
                 out[sentid][TOKENS][wordid][NER] = labels[i]
-        stage_times['ner'] = _t_ner_fused
+        if not use_dual:
+            stage_times['ner'] = _t_ner_fused
     else:
         _t0 = time.perf_counter()
         if active_lang in langwithner:

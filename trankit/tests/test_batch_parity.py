@@ -177,6 +177,49 @@ def test_fused_vs_unfused(p):
     print("PASS: fused vs unfused parity")
 
 
+def test_dual_vs_sequential(p):
+    """Dual adapter single-pass must produce identical results to two-pass.
+
+    Requires stacked_adapters=True on the pipeline. If not, the test is skipped.
+    """
+    if not getattr(p, '_stacked_adapters', False):
+        print("SKIP: dual vs sequential (requires stacked_adapters=True)")
+        return
+
+    import trankit.batch_pipeline as bp
+    saved_dual = bp._DUAL_ADAPTER
+    saved_fuse = bp._FUSE_TAGGER_NER
+
+    try:
+        with torch.no_grad():
+            bp._DUAL_ADAPTER = True
+            bp._FUSE_TAGGER_NER = True
+            dual_results = batch_process(p, DOCS, batch_tokenize=True)
+
+            bp._DUAL_ADAPTER = False
+            bp._FUSE_TAGGER_NER = True
+            sequential_results = batch_process(p, DOCS, batch_tokenize=True)
+    finally:
+        bp._DUAL_ADAPTER = saved_dual
+        bp._FUSE_TAGGER_NER = saved_fuse
+
+    if len(dual_results) != len(sequential_results):
+        raise RuntimeError(
+            f"dual returned {len(dual_results)} results, "
+            f"sequential returned {len(sequential_results)}"
+        )
+
+    for i, (dr, sr) in enumerate(zip(dual_results, sequential_results)):
+        diffs = compare(dr, sr)
+        if diffs:
+            raise RuntimeError(
+                f"dual vs sequential parity failure for doc {i}: "
+                f"{len(diffs)} differences:\n" +
+                "\n".join(f"  {d}" for d in diffs[:10])
+            )
+    print("PASS: dual vs sequential parity")
+
+
 def run_parity_tests():
     p = trankit.Pipeline("english", embedding="xlm-roberta-base")
     all_passed = True
@@ -192,6 +235,15 @@ def run_parity_tests():
         except RuntimeError as e:
             print(f"FAIL: {name}\n  {e}")
             all_passed = False
+
+    # Dual-adapter test requires stacked_adapters=True
+    p_stacked = trankit.Pipeline("english", embedding="xlm-roberta-base",
+                                 stacked_adapters=True)
+    try:
+        test_dual_vs_sequential(p_stacked)
+    except RuntimeError as e:
+        print(f"FAIL: dual vs sequential\n  {e}")
+        all_passed = False
 
     if all_passed:
         print("\nAll batch parity tests passed.")

@@ -779,6 +779,28 @@ class Pipeline:
             self._embedding_layers.xlmr, mode=mode, dynamic=dynamic
         )
 
+    def _set_dual_adapters(self, model_a, model_b):
+        """Activate dual adapter mode for single-pass tagger+NER encoding."""
+        lang = self._config.active_lang
+        slot_a = _adapter_slot_name(model_a, lang)
+        slot_b = _adapter_slot_name(model_b, lang)
+        self._load_adapter_weights(model_name=model_a)
+        self._load_adapter_weights(model_name=model_b)
+        if not self._stacked_registry.has_slot(slot_a):
+            raise RuntimeError(
+                f"Adapter slot '{slot_a}' not registered after loading {model_a}"
+            )
+        if not self._stacked_registry.has_slot(slot_b):
+            raise RuntimeError(
+                f"Adapter slot '{slot_b}' not registered after loading {model_b}"
+            )
+        self._stacked_registry.set_dual_active(slot_a, slot_b)
+
+    def _exit_dual_mode(self):
+        """Exit dual adapter mode, reverting to single-adapter forward."""
+        if self._stacked_registry is not None:
+            self._stacked_registry.exit_dual_mode()
+
     def _detect_lang_and_switch(self, text):
         detected_code = langid.classify(text)[0]
         assert detected_code in self.code2lang, f'Detected code "{detected_code}" must be in {self.code2lang.keys()}'

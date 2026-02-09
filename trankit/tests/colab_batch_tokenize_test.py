@@ -361,15 +361,84 @@ print(f"  Per doc: {total_wall / total_docs * 1000:.1f}ms")
 print()
 
 if stage_accum:
-    for stage in ['tokenize', 'tagger', 'lemma', 'ner']:
+    stage_order = ['tokenize', 'encoder_shared', 'tagger', 'lemma', 'ner']
+    for stage in stage_order:
         if stage in stage_accum:
             st = stage_accum[stage]
             pct = st / total_wall * 100
             per_doc = st / total_docs * 1000
-            print(f"  {stage:<12s}  {st:>6.2f}s  {pct:>5.1f}%  {per_doc:>6.1f}ms/doc")
+            print(f"  {stage:<16s}  {st:>6.2f}s  {pct:>5.1f}%  {per_doc:>6.1f}ms/doc")
     overhead = total_wall - sum(stage_accum.values())
     if overhead > 0.01:
-        print(f"  {'overhead':<12s}  {overhead:>6.2f}s  {overhead / total_wall * 100:>5.1f}%  {overhead / total_docs * 1000:>6.1f}ms/doc")
+        print(f"  {'overhead':<16s}  {overhead:>6.2f}s  {overhead / total_wall * 100:>5.1f}%  {overhead / total_docs * 1000:>6.1f}ms/doc")
+
+print(f"\n{'=' * 70}")
+
+# ── 6b2. Dual adapter comparison ─────────────────────────────
+print("\nDUAL ADAPTER: long/full merged (single-pass vs two-pass encoding)")
+print("=" * 70)
+
+import trankit.batch_pipeline as _bp_dual
+
+dual_header = (f"{'Mode':<16s} {'docs/s':>7s} {'mean':>8s} {'p95':>8s} "
+               f"{'VRAM':>7s} {'encoder':>10s} {'tagger':>10s} {'ner':>10s}")
+print(dual_header)
+print("-" * len(dual_header))
+
+dual_doc = make_document(300)
+dual_docs = [dual_doc] * NUM_DOCS
+
+_saved_dual_adapter = _bp_dual._DUAL_ADAPTER
+_saved_fuse_tagger_ner = _bp_dual._FUSE_TAGGER_NER
+
+try:
+    for dual_label, dual_val in [("dual (1-pass)", True), ("two-pass", False)]:
+        _bp_dual._DUAL_ADAPTER = dual_val
+        _bp_dual._FUSE_TAGGER_NER = True
+
+        # Warmup
+        with torch.inference_mode():
+            for _ in range(3):
+                _bp_dual.batch_process(p, dual_docs[:5], batch_tokenize=True)
+            torch.cuda.synchronize()
+
+        monitor = GpuMonitor()
+        dtimes = []
+        dstage_accum = {}
+
+        with torch.inference_mode():
+            monitor.start()
+            for i in range(0, NUM_DOCS, BATCH_SIZE):
+                chunk = dual_docs[i:i + BATCH_SIZE]
+                torch.cuda.synchronize()
+                t0 = time.perf_counter()
+                _bp_dual.batch_process(p, chunk, batch_tokenize=True)
+                torch.cuda.synchronize()
+                elapsed = time.perf_counter() - t0
+                per_doc = elapsed / len(chunk)
+                dtimes.extend([per_doc] * len(chunk))
+
+                if hasattr(p, '_last_batch_stage_times'):
+                    for stage, dt in p._last_batch_stage_times.items():
+                        dstage_accum[stage] = dstage_accum.get(stage, 0.0) + dt
+            monitor.stop()
+
+        dtotal = sum(dtimes)
+        dsorted = sorted(dtimes)
+        dgs = monitor.summary()
+
+        enc_ms = dstage_accum.get('encoder_shared', 0.0) / NUM_DOCS * 1000
+        tag_ms = dstage_accum.get('tagger', 0.0) / NUM_DOCS * 1000
+        ner_ms = dstage_accum.get('ner', 0.0) / NUM_DOCS * 1000
+
+        print(f"{dual_label:<16s} {NUM_DOCS / dtotal:>7.1f} "
+              f"{statistics.mean(dtimes) * 1000:>7.0f}ms "
+              f"{percentile(dsorted, 95) * 1000:>7.0f}ms "
+              f"{dgs.get('mem_max_mb', 0):>6d}MB "
+              f"{enc_ms:>9.1f}ms {tag_ms:>9.1f}ms {ner_ms:>9.1f}ms")
+finally:
+    _bp_dual._DUAL_ADAPTER = _saved_dual_adapter
+    _bp_dual._FUSE_TAGGER_NER = _saved_fuse_tagger_ner
 
 print(f"\n{'=' * 70}")
 

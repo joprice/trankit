@@ -175,7 +175,7 @@ class NERDatasetLive(Dataset):
             sent_index=batch_sent_index,
             word_ids=batch_word_ids,
             words=batch_words,
-            word_num=torch.tensor(batch_word_num, dtype=torch.long),
+            word_num=batch_word_num,
             word_mask=torch.from_numpy(word_mask).eq(0),
             piece_idxs=torch.from_numpy(piece_idxs),
             attention_masks=torch.from_numpy(attn_masks),

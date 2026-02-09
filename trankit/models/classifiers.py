@@ -46,7 +46,7 @@ class NERClassifier(nn.Module):
     def predict(self, batch, word_reprs):
         logits = self.entity_label_ffn(word_reprs)
         trans = self.crit._transitions.detach()
-        lengths = batch.word_num.detach().cpu().tolist()
+        lengths = batch.word_num if isinstance(batch.word_num, list) else batch.word_num.detach().cpu().tolist()
         tag_id_seqs = viterbi_decode_batch(logits.detach(), trans, lengths)
         return [[self.entity_label_itos[t] for t in tags[:l]]
                 for tags, l in zip(tag_id_seqs, lengths)]
