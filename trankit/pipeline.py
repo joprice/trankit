@@ -25,6 +25,7 @@ import os
 
 _BYPASS_ADAPTER_RESET = os.environ.get('TRANKIT_BYPASS_ADAPTER_RESET', '1') == '1'
 _STRIP_LORA = os.environ.get('TRANKIT_STRIP_LORA', '1') == '1'
+_PATCH_ADAPTER_OVERHEAD = os.environ.get('TRANKIT_PATCH_ADAPTER_OVERHEAD', '1') == '1'
 
 from transformers import XLMRobertaTokenizerFast
 
@@ -77,6 +78,88 @@ def _strip_lora_wrappers(model):
     from adapters.methods.lora import LoRALinearTorch
     import torch.nn as nn
     LoRALinearTorch.forward = nn.Linear.forward
+
+
+def _patch_adapter_overhead():
+    """Monkey-patch adapters library to remove composition overhead.
+
+    Trankit only uses Stack(single_adapter), never Parallel/Fuse/BatchSplit.
+    The adapters library's composition machinery adds ~7% overhead from:
+    - match_attn_matrices_for_parallel: no-op tensor.repeat() calls
+    - adjust_tensors_for_parallel: unnecessary shape checks
+    - compose dispatch chain: full composition lookup for single adapter
+    - get_active_setup: thread-local context lookup (always None in inference)
+
+    All patches preserve correct behavior for non-Parallel single-adapter use
+    and fall through to original logic for other cases.
+    """
+    import adapters.composition
+    import adapters.models.xlm_roberta.modeling_xlm_roberta as _xlmr_mod
+    from adapters.methods.adapter_layer_base import ComposableAdapterLayerBase, AdapterLayerBase
+
+    # Patch 1: match_attn_matrices_for_parallel — short-circuit when shapes match
+    # NOTE: must call .contiguous() because the inputs are non-contiguous views
+    # from transpose_for_scores (view+permute). The original repeat(1,...) implicitly
+    # made them contiguous; SDPA on MPS produces different results with non-contiguous inputs.
+    def _fast_match_attn(query, key, value):
+        if query.shape[0] == key.shape[0] == value.shape[0]:
+            return query.contiguous(), key.contiguous(), value.contiguous()
+        max_bsz = max(query.shape[0], key.shape[0], value.shape[0])
+        query = query.repeat(max_bsz // query.shape[0], *([1] * len(query.shape[1:])))
+        key = key.repeat(max_bsz // key.shape[0], *([1] * len(key.shape[1:])))
+        value = value.repeat(max_bsz // value.shape[0], *([1] * len(value.shape[1:])))
+        return query, key, value
+
+    adapters.composition.match_attn_matrices_for_parallel = _fast_match_attn
+    _xlmr_mod.match_attn_matrices_for_parallel = _fast_match_attn
+
+    # Patch 2: adjust_tensors_for_parallel — fast path for single tensor with matching shape
+    def _fast_adjust_tensors(hidden_states, *tensors):
+        if len(tensors) == 1:
+            t = tensors[0]
+            if t is None or t.shape[0] == hidden_states.shape[0]:
+                return tensors
+        outputs = []
+        for tensor in tensors:
+            if tensor is not None and hidden_states.shape[0] > tensor.shape[0]:
+                repeats = [1] * len(tensor.shape)
+                repeats[0] = hidden_states.shape[0] // tensor.shape[0]
+                outputs.append(tensor.repeat(*repeats))
+            else:
+                outputs.append(tensor)
+        return tuple(outputs)
+
+    adapters.composition.adjust_tensors_for_parallel = _fast_adjust_tensors
+    _xlmr_mod.adjust_tensors_for_parallel = _fast_adjust_tensors
+
+    # Patch 3: compose — skip dispatch chain for Stack with single adapter
+    _orig_compose = ComposableAdapterLayerBase.compose
+
+    def _fast_compose(self, adapter_setup, state):
+        if type(adapter_setup) is Stack and len(adapter_setup) == 1:
+            child = adapter_setup[0]
+            if isinstance(child, str) and child in self.adapter_modules:
+                state = self.pre_block(child, state)
+                return self.compose_single(child, state, lvl=0)
+        return _orig_compose(self, adapter_setup, state)
+
+    ComposableAdapterLayerBase.compose = _fast_compose
+
+    # Patch 4: get_active_setup — skip AdapterSetup.get_context() thread-local lookup
+    def _fast_get_active_setup(self):
+        if not hasattr(self, 'adapters_config'):
+            return None
+        adapter_setup = self.adapters_config.active_setup
+        if adapter_setup is None:
+            return None
+        if (self.adapters_config.skip_layers is not None
+                and self.layer_idx in self.adapters_config.skip_layers):
+            return None
+        if set(self.adapter_modules.keys()) & adapter_setup.flatten():
+            return adapter_setup
+        return None
+
+    AdapterLayerBase.get_active_setup = _fast_get_active_setup
 
 
 def is_string(input):
@@ -165,6 +248,8 @@ class Pipeline:
         self._embedding_layers.eval()
         if _STRIP_LORA:
             _strip_lora_wrappers(self._embedding_layers.xlmr)
+        if _PATCH_ADAPTER_OVERHEAD:
+            _patch_adapter_overhead()
         # for loading & auto-converting adapter weights
         self._adapter_loader = AdapterLoader(self._embedding_layers.xlmr, "text_task")
 

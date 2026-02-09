@@ -537,30 +537,34 @@ class Seq2SeqModel(nn.Module):
         else:
             edit_logits = None
 
-        # greedy decode by step
+        # greedy decode — accumulate on GPU, single CPU transfer at end
         dec_inputs = self.embedding(self.SOS_tensor)
         dec_inputs = dec_inputs.expand(batch_size, dec_inputs.size(0), dec_inputs.size(1))
 
-        done = [False for _ in range(batch_size)]
-        total_done = 0
+        all_preds = src.new_zeros(batch_size, self.max_dec_len)  # (B, max_len) on device
+        done_mask = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
+        lengths = torch.full((batch_size,), self.max_dec_len, dtype=torch.long, device=self.device)
         max_len = 0
-        output_seqs = [[] for _ in range(batch_size)]
 
-        while total_done < batch_size and max_len < self.max_dec_len:
+        while max_len < self.max_dec_len:
             log_probs, (hn, cn) = self.decode(dec_inputs, hn, cn, h_in, src_mask)
             assert log_probs.size(1) == 1, "Output must have 1-step of output."
             _, preds = log_probs.squeeze(1).max(1, keepdim=True)
-            dec_inputs = self.embedding(preds)  # update decoder inputs
+            dec_inputs = self.embedding(preds)
+            preds_flat = preds.squeeze(1)
+            all_preds[:, max_len] = preds_flat
             max_len += 1
-            preds_cpu = preds.detach().squeeze(1).cpu().tolist()  # one transfer per step
-            for i in range(batch_size):
-                if not done[i]:
-                    token = preds_cpu[i]
-                    if token == EOS_ID:
-                        done[i] = True
-                        total_done += 1
-                    else:
-                        output_seqs[i].append(token)
+            # check EOS on device — no CPU sync per step
+            newly_done = preds_flat.eq(EOS_ID) & ~done_mask
+            lengths[newly_done] = max_len - 1  # length excludes EOS
+            done_mask = done_mask | preds_flat.eq(EOS_ID)
+            if done_mask.all():
+                break
+
+        # single CPU transfer
+        all_preds_cpu = all_preds[:, :max_len].cpu().tolist()
+        lengths_cpu = lengths.cpu().tolist()
+        output_seqs = [all_preds_cpu[i][:lengths_cpu[i]] for i in range(batch_size)]
         return output_seqs, edit_logits
 
     def predict(self, src, src_mask, pos=None, beam_size=5):
