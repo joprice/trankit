@@ -11,6 +11,10 @@ CPU_LEMMA = False    # Set to True to move seq2seq lemma decoder to CPU
 WARMUP_RUNS = 2
 BENCHMARK_RUNS = 10
 PROFILE = True       # Set to True to collect cProfile stats
+BYPASS_ADAPTER_RESET = True  # Set to False to benchmark without the bypass
+
+import os
+os.environ['TRANKIT_BYPASS_ADAPTER_RESET'] = '1' if BYPASS_ADAPTER_RESET else '0'
 
 # ── 1. Check CUDA ────────────────────────────────────────────
 import torch
@@ -27,6 +31,13 @@ print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f}GB
 !pip install --no-cache-dir -q adapters psutil langid filelock tqdm requests protobuf sentencepiece sacremoses regex packaging
 
 # ── 3. Setup ─────────────────────────────────────────────────
+# Flush stale trankit modules from previous Colab cell runs so
+# Python reimports from the freshly pip-installed files on disk.
+import sys
+for _mod in list(sys.modules):
+    if _mod == 'trankit' or _mod.startswith('trankit.'):
+        del sys.modules[_mod]
+
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", message=".*adapters available but none.*")
@@ -38,10 +49,11 @@ import cProfile
 import io
 import math
 import pstats
-import sys
 import time
 import statistics
 import json
+import trankit
+print(f"trankit imported from: {trankit.__file__}")
 from trankit import Pipeline
 
 REPORT_PATH = "cuda_benchmark_report.txt"
@@ -173,6 +185,42 @@ print(f"Device: {device_type}")
 print(f"Pipeline initialized in {init_time:.2f}s")
 print(f"VRAM after init: {gpu_mb():.0f}MB\n")
 
+# ── 4b. Diagnostic: verify bypass & count set_active_adapters calls ──
+import inspect as _inspect
+import traceback as _tb
+import hashlib as _hashlib
+
+_bypass_src = _inspect.getsource(p._load_adapter_weights)
+_has_bypass = 'parse_composition' in _bypass_src
+print(f"Bypass present in _load_adapter_weights: {_has_bypass}")
+print(f"cache_adapters on pipeline: {p._cache_adapters}")
+
+# Show installed pipeline.py path and hash
+_pipeline_file = _inspect.getfile(type(p))
+print(f"pipeline.py path: {_pipeline_file}")
+with open(_pipeline_file, 'rb') as _f:
+    print(f"pipeline.py md5: {_hashlib.md5(_f.read()).hexdigest()}")
+
+# Show the warm-path section of _load_adapter_weights
+_warm_idx = _bypass_src.find('Warm path')
+if _warm_idx >= 0:
+    print(f"Warm path code:\n{_bypass_src[_warm_idx:_warm_idx+300]}")
+else:
+    print(f"No 'Warm path' found. First 500 chars:\n{_bypass_src[:500]}")
+
+_xlmr_cls = type(p._embedding_layers.xlmr)
+_orig_saa = _xlmr_cls.set_active_adapters
+_saa_calls = []
+
+def _counting_saa(self, *args, **kwargs):
+    if len(_saa_calls) < 5:
+        _saa_calls.append(''.join(_tb.format_stack(limit=10)))
+    else:
+        _saa_calls.append(None)  # just count, don't store trace
+    return _orig_saa(self, *args, **kwargs)
+
+_xlmr_cls.set_active_adapters = _counting_saa
+
 results = []
 
 # ── 5. Short text ─────────────────────────────────────────────
@@ -205,6 +253,20 @@ for label, fn in [
 
 print(f"\n{'=' * 70}")
 print("Done.\n")
+
+# ── 6a. set_active_adapters diagnostic ────────────────────────
+print(f"\n{'=' * 70}")
+print(f"set_active_adapters calls during benchmark: {len(_saa_calls)}")
+if _saa_calls:
+    print("First stack traces:")
+    for i, trace in enumerate(_saa_calls[:5]):
+        if trace:
+            print(f"\n--- call {i+1} ---")
+            print(trace)
+print(f"{'=' * 70}\n")
+
+# Restore original method
+_xlmr_cls.set_active_adapters = _orig_saa
 
 # ── 6b. Profile output ───────────────────────────────────────
 if profiler is not None:

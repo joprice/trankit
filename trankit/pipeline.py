@@ -22,6 +22,9 @@ import re
 import hashlib
 
 import os
+
+_BYPASS_ADAPTER_RESET = os.environ.get('TRANKIT_BYPASS_ADAPTER_RESET', '1') == '1'
+
 from transformers import XLMRobertaTokenizerFast
 
 TRANKIT_QUIET = os.environ.get("TRANKIT_QUIET", "").lower() in ("1", "true", "yes")
@@ -442,14 +445,17 @@ class Pipeline:
                     self._resident_adapters.add(slot_name)
 
             # Warm path: skip if already active.
-            # Bypass set_active_adapters (which calls reset_adapter, iterating
-            # all modules for LoRA resets we don't need) and set config directly.
             if self._active_slot != slot_name:
-                xlmr = self._embedding_layers.xlmr
-                xlmr.adapters_config.active_setup = parse_composition(
-                    Stack(slot_name), model_type=xlmr.config.model_type
-                )
-                xlmr.adapters_config.skip_layers = None
+                if _BYPASS_ADAPTER_RESET:
+                    # Set adapter config directly, skipping reset_adapter
+                    # (which iterates all modules for LoRA resets we don't need).
+                    xlmr = self._embedding_layers.xlmr
+                    xlmr.adapters_config.active_setup = parse_composition(
+                        Stack(slot_name), model_type=xlmr.config.model_type
+                    )
+                    xlmr.adapters_config.skip_layers = None
+                else:
+                    self._embedding_layers.xlmr.set_active_adapters(Stack(slot_name))
                 self._active_slot = slot_name
         else:
             # Original behavior: copy weights into fixed slot on language change
