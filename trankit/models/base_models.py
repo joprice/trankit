@@ -13,7 +13,8 @@ class Base_Model(nn.Module):  # currently assuming the pretrained transformer is
         self.xlmr_dim = 768 if config.embedding_name == 'xlm-roberta-base' else 1024
         self.xlmr = XLMRobertaModel.from_pretrained(config.embedding_name,
                                                     cache_dir=os.path.join(config._cache_dir, config.embedding_name),
-                                                    output_hidden_states=True)
+                                                    output_hidden_states=True,
+                                                    use_safetensors=True)
         adapters.init(self.xlmr)
         self.xlmr_dropout = nn.Dropout(p=config.embedding_dropout)
         # add task adapters

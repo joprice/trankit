@@ -1,16 +1,15 @@
 # Trankit CUDA Benchmark for Colab T4 — adapter-caching branch
-# Runs the same per-task + full-pipeline benchmark as test_benchmark.py
+# Runs both cached and stacked-adapter modes, then prints a comparison table.
 # Copy this entire cell into Colab
 # First: Runtime > Change runtime type > GPU (T4)
 
 # ── Config ──────────────────────────────────────────────────
 EMBEDDING = "xlm-roberta-base"
-CACHE_ADAPTERS = True
 FP16 = False         # Set to True to enable autocast (experimental)
 CPU_LEMMA = False    # Set to True to move seq2seq lemma decoder to CPU
 WARMUP_RUNS = 2
 BENCHMARK_RUNS = 10
-PROFILE = True       # Set to True to collect cProfile stats
+PROFILE = False      # Set to True to collect cProfile stats
 TORCH_PROFILE = False  # Set to True to collect torch.profiler traces
 TORCH_PROFILE_TASKS = ["full pipeline (long)"]  # Task labels to profile; [] means all
 TORCH_PROFILE_RECORD_SHAPES = True
@@ -120,11 +119,8 @@ def gpu_mb():
     return torch.cuda.memory_allocated() / 1024**2
 
 
-profiler = cProfile.Profile() if PROFILE else None
-torch_profile_artifacts = []
-
-
-def benchmark_task(fn, text, label, runs=BENCHMARK_RUNS, warmup=WARMUP_RUNS):
+def benchmark_task(fn, text, label, runs=BENCHMARK_RUNS, warmup=WARMUP_RUNS,
+                   profiler=None):
     with torch.inference_mode():
         for _ in range(warmup):
             result = fn(text)
@@ -133,59 +129,17 @@ def benchmark_task(fn, text, label, runs=BENCHMARK_RUNS, warmup=WARMUP_RUNS):
         num_sentences = count_sentences(result)
 
         times = []
-        enable_torch_profile = TORCH_PROFILE and (not TORCH_PROFILE_TASKS or label in TORCH_PROFILE_TASKS)
-        if enable_torch_profile:
-            safe_label = label.lower().replace(" ", "_").replace("(", "").replace(")", "")
-            trace_path = f"torch_profile_{safe_label}.json"
-            # Clamp active steps to available runs so we always capture something.
-            active_steps = max(1, min(TORCH_PROFILE_ACTIVE, runs))
-            wait_steps = min(TORCH_PROFILE_WAIT, max(0, runs - active_steps))
-            warmup_steps = min(TORCH_PROFILE_WARMUP, max(0, runs - active_steps - wait_steps))
-            with torch_profile(
-                activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-                record_shapes=TORCH_PROFILE_RECORD_SHAPES,
-                with_stack=TORCH_PROFILE_WITH_STACK,
-                schedule=torch_profiler_schedule(
-                    wait=wait_steps,
-                    warmup=warmup_steps,
-                    active=active_steps,
-                    repeat=TORCH_PROFILE_REPEAT,
-                ),
-            ) as tprof:
-                if profiler is not None:
-                    profiler.enable()
-                for _ in range(runs):
-                    torch.cuda.synchronize()
-                    start = time.perf_counter()
-                    with record_function(f"task:{label}"):
-                        torch.cuda.nvtx.range_push(f"task:{label}")
-                        try:
-                            fn(text)
-                        finally:
-                            torch.cuda.nvtx.range_pop()
-                    torch.cuda.synchronize()
-                    elapsed = time.perf_counter() - start
-                    times.append(elapsed)
-                    tprof.step()
-                if profiler is not None:
-                    profiler.disable()
-            tprof.export_chrome_trace(trace_path)
-            key_avg = tprof.key_averages().table(sort_by="self_cuda_time_total", row_limit=40)
-            print(f"\n[torch.profiler] {label} top ops (self_cuda_time_total):\n{key_avg}")
-            print(f"[torch.profiler] Trace saved to: {trace_path}\n")
-            torch_profile_artifacts.append({"task": label, "trace_path": trace_path})
-        else:
-            if profiler is not None:
-                profiler.enable()
-            for _ in range(runs):
-                torch.cuda.synchronize()
-                start = time.perf_counter()
-                fn(text)
-                torch.cuda.synchronize()
-                elapsed = time.perf_counter() - start
-                times.append(elapsed)
-            if profiler is not None:
-                profiler.disable()
+        if profiler is not None:
+            profiler.enable()
+        for _ in range(runs):
+            torch.cuda.synchronize()
+            start = time.perf_counter()
+            fn(text)
+            torch.cuda.synchronize()
+            elapsed = time.perf_counter() - start
+            times.append(elapsed)
+        if profiler is not None:
+            profiler.disable()
 
     mean_t = statistics.mean(times)
     stdev_t = statistics.stdev(times) if len(times) > 1 else 0.0
@@ -217,7 +171,45 @@ def format_row(r):
     )
 
 
-# ── 4. Initialize ────────────────────────────────────────────
+TASKS = [
+    ("tokenize (short)", "tokenize", SHORT_TEXT),
+    ("posdep (short)", "posdep", SHORT_TEXT),
+    ("lemmatize (short)", "lemmatize", SHORT_TEXT),
+    ("ner (short)", "ner", SHORT_TEXT),
+    ("full pipeline (short)", None, SHORT_TEXT),
+    ("tokenize (long)", "tokenize", LONG_TEXT),
+    ("posdep (long)", "posdep", LONG_TEXT),
+    ("lemmatize (long)", "lemmatize", LONG_TEXT),
+    ("ner (long)", "ner", LONG_TEXT),
+    ("full pipeline (long)", None, LONG_TEXT),
+]
+
+
+def run_mode(p, mode_label, profiler=None):
+    """Run all benchmark tasks for a pipeline, return list of result dicts."""
+    results = []
+    print(f"\n--- {mode_label}: Short text ({len(SHORT_TEXT)} chars) ---")
+    for label, method, text in TASKS:
+        if text is not SHORT_TEXT:
+            continue
+        fn = getattr(p, method) if method else p
+        r = benchmark_task(fn, text, label, profiler=profiler)
+        results.append(r)
+        print(format_row(r))
+
+    print(f"\n--- {mode_label}: Long text ({len(LONG_TEXT)} chars) ---")
+    for label, method, text in TASKS:
+        if text is not LONG_TEXT:
+            continue
+        fn = getattr(p, method) if method else p
+        r = benchmark_task(fn, text, label, profiler=profiler)
+        results.append(r)
+        print(format_row(r))
+
+    return results
+
+
+# ── 4. Header ───────────────────────────────────────────────
 print(f"\n{'=' * 70}")
 import importlib.metadata as _meta
 _trankit_ver = _meta.version("trankit")
@@ -229,78 +221,103 @@ except Exception:
 print(f"Trankit CUDA Benchmark — {EMBEDDING} (adapter-caching)")
 print(f"trankit: {_trankit_ver} commit {_commit}")
 print(f"Warmup: {WARMUP_RUNS} | Runs: {BENCHMARK_RUNS}")
-print(f"cache_adapters: {CACHE_ADAPTERS} | fp16: {FP16} | cpu_lemma: {CPU_LEMMA}")
+print(f"fp16: {FP16} | cpu_lemma: {CPU_LEMMA}")
 print(f"bypass_adapter_reset: {BYPASS_ADAPTER_RESET} | strip_lora: {STRIP_LORA} | patch_adapter_overhead: {PATCH_ADAPTER_OVERHEAD}")
 print(f"pin_memory: {PIN_MEMORY}")
 print(f"profile: {PROFILE}")
-print(f"torch_profile: {TORCH_PROFILE} | tasks: {TORCH_PROFILE_TASKS if TORCH_PROFILE_TASKS else 'all'}")
-if TORCH_PROFILE:
-    print(
-        f"torch_profile_schedule: wait={TORCH_PROFILE_WAIT}, "
-        f"warmup={TORCH_PROFILE_WARMUP}, active={TORCH_PROFILE_ACTIVE}, repeat={TORCH_PROFILE_REPEAT}"
-    )
-print(f"{'=' * 70}\n")
+print(f"{'=' * 70}")
+
+# ── 5. Run cached mode ──────────────────────────────────────
+print(f"\n{'=' * 70}")
+print("Mode: cache_adapters (baseline)")
+print(f"{'=' * 70}")
 
 torch.cuda.empty_cache()
 t0 = time.perf_counter()
-p = Pipeline("english", gpu=True, cache_dir="./cache", embedding=EMBEDDING, fp16=FP16, cpu_lemma=CPU_LEMMA, cache_adapters=CACHE_ADAPTERS, pin_memory=PIN_MEMORY)
-init_time = time.perf_counter() - t0
-device_type = str(p._config.device.type)
-print(f"Device: {device_type}")
-print(f"Pipeline initialized in {init_time:.2f}s")
-print(f"VRAM after init: {gpu_mb():.0f}MB\n")
+p_cached = Pipeline("english", gpu=True, cache_dir="./cache", embedding=EMBEDDING,
+                     fp16=FP16, cpu_lemma=CPU_LEMMA, cache_adapters=True,
+                     pin_memory=PIN_MEMORY)
+init_cached = time.perf_counter() - t0
+print(f"Device: {p_cached._config.device.type}")
+print(f"Pipeline initialized in {init_cached:.2f}s")
+print(f"VRAM after init: {gpu_mb():.0f}MB")
 
-results = []
+profiler_cached = cProfile.Profile() if PROFILE else None
+results_cached = run_mode(p_cached, "cached", profiler=profiler_cached)
 
-# ── 5. Short text ─────────────────────────────────────────────
-print(f"--- Short text ({len(SHORT_TEXT)} chars) ---")
-for label, fn in [
-    ("tokenize (short)", p.tokenize),
-    ("posdep (short)", p.posdep),
-    ("lemmatize (short)", p.lemmatize),
-    ("ner (short)", p.ner),
-    ("full pipeline (short)", p),
-]:
-    r = benchmark_task(fn, SHORT_TEXT, label)
-    results.append(r)
-    print(format_row(r))
+# Free cached pipeline
+del p_cached
+torch.cuda.empty_cache()
+import gc; gc.collect()
+
+# ── 6. Run stacked mode ─────────────────────────────────────
+print(f"\n{'=' * 70}")
+print("Mode: stacked_adapters")
+print(f"{'=' * 70}")
+
+torch.cuda.empty_cache()
+t0 = time.perf_counter()
+p_stacked = Pipeline("english", gpu=True, cache_dir="./cache", embedding=EMBEDDING,
+                      fp16=FP16, cpu_lemma=CPU_LEMMA, stacked_adapters=True,
+                      pin_memory=PIN_MEMORY)
+init_stacked = time.perf_counter() - t0
+print(f"Device: {p_stacked._config.device.type}")
+print(f"Pipeline initialized in {init_stacked:.2f}s")
+print(f"VRAM after init: {gpu_mb():.0f}MB")
+
+profiler_stacked = cProfile.Profile() if PROFILE else None
+results_stacked = run_mode(p_stacked, "stacked", profiler=profiler_stacked)
+
+del p_stacked
+torch.cuda.empty_cache()
+gc.collect()
+
+# ── 7. Comparison table ──────────────────────────────────────
+print(f"\n{'=' * 70}")
+print("Comparison: stacked vs cached")
+print(f"{'=' * 70}\n")
+
+header = (
+    f"  {'Task':<25s} "
+    f"{'Cached':>9s}  "
+    f"{'Stacked':>9s}  "
+    f"{'Delta':>8s}  "
+    f"{'Cached tok/s':>12s}  "
+    f"{'Stacked tok/s':>13s}  "
+    f"{'Delta':>8s}"
+)
+print(header)
+print("  " + "-" * (len(header) - 2))
+
+for rc, rs in zip(results_cached, results_stacked):
+    time_delta_pct = ((rs["mean_sec"] - rc["mean_sec"]) / rc["mean_sec"] * 100) if rc["mean_sec"] > 0 else 0
+    tps_delta_pct = ((rs["tokens_per_sec"] - rc["tokens_per_sec"]) / rc["tokens_per_sec"] * 100) if rc["tokens_per_sec"] > 0 else 0
+    time_sign = "+" if time_delta_pct >= 0 else ""
+    tps_sign = "+" if tps_delta_pct >= 0 else ""
+    print(
+        f"  {rc['task']:<25s} "
+        f"{rc['mean_sec']:>8.4f}s  "
+        f"{rs['mean_sec']:>8.4f}s  "
+        f"{time_sign}{time_delta_pct:>6.1f}%  "
+        f"{rc['tokens_per_sec']:>11.1f}  "
+        f"{rs['tokens_per_sec']:>12.1f}  "
+        f"{tps_sign}{tps_delta_pct:>6.1f}%"
+    )
 
 print()
 
-# ── 6. Long text ──────────────────────────────────────────────
-print(f"--- Long text ({len(LONG_TEXT)} chars) ---")
-for label, fn in [
-    ("tokenize (long)", p.tokenize),
-    ("posdep (long)", p.posdep),
-    ("lemmatize (long)", p.lemmatize),
-    ("ner (long)", p.ner),
-    ("full pipeline (long)", p),
-]:
-    r = benchmark_task(fn, LONG_TEXT, label)
-    results.append(r)
-    print(format_row(r))
+# ── 8. Profile output ───────────────────────────────────────
+for label, prof in [("cached", profiler_cached), ("stacked", profiler_stacked)]:
+    if prof is not None:
+        print(f"\n{'=' * 70}")
+        print(f"cProfile ({label}) — top 40 by cumulative time")
+        print(f"{'=' * 70}\n")
+        stream = io.StringIO()
+        ps = pstats.Stats(prof, stream=stream)
+        ps.strip_dirs().sort_stats("cumtime").print_stats(40)
+        print(stream.getvalue())
 
-print(f"\n{'=' * 70}")
-print("Done.\n")
-
-# ── 6b. Profile output ───────────────────────────────────────
-if profiler is not None:
-    print(f"\n{'=' * 70}")
-    print("cProfile — top 40 by cumulative time")
-    print(f"{'=' * 70}\n")
-    stream = io.StringIO()
-    ps = pstats.Stats(profiler, stream=stream)
-    ps.strip_dirs().sort_stats("cumtime").print_stats(40)
-    print(stream.getvalue())
-
-if torch_profile_artifacts:
-    print(f"\n{'=' * 70}")
-    print("torch.profiler artifacts")
-    print(f"{'=' * 70}")
-    for a in torch_profile_artifacts:
-        print(f"{a['task']}: {a['trace_path']}")
-
-# ── 7. Save ──────────────────────────────────────────────────
+# ── 9. Save ──────────────────────────────────────────────────
 gpu_name = torch.cuda.get_device_name(0).replace(" ", "-")
 suffix = "_cpulemma" if CPU_LEMMA else ""
 json_path = f"benchmark_results_{EMBEDDING.replace('/', '-')}_{gpu_name}{suffix}.json"
@@ -308,22 +325,20 @@ with open(json_path, "w") as f:
     json.dump({
         "embedding": EMBEDDING,
         "branch": "adapter-caching",
-        "device": device_type,
+        "device": "cuda",
         "gpu": torch.cuda.get_device_name(0),
-        "cache_adapters": CACHE_ADAPTERS,
         "fp16": FP16,
         "cpu_lemma": CPU_LEMMA,
         "bypass_adapter_reset": BYPASS_ADAPTER_RESET,
         "strip_lora": STRIP_LORA,
         "patch_adapter_overhead": PATCH_ADAPTER_OVERHEAD,
         "pin_memory": PIN_MEMORY,
-        "torch_profile": TORCH_PROFILE,
-        "torch_profile_tasks": TORCH_PROFILE_TASKS,
-        "torch_profile_artifacts": torch_profile_artifacts,
         "warmup_runs": WARMUP_RUNS,
         "benchmark_runs": BENCHMARK_RUNS,
-        "init_time_sec": round(init_time, 2),
-        "results": results,
+        "init_time_cached_sec": round(init_cached, 2),
+        "init_time_stacked_sec": round(init_stacked, 2),
+        "results_cached": results_cached,
+        "results_stacked": results_stacked,
     }, f, indent=2)
 
 sys.stdout = _orig_stdout
