@@ -237,11 +237,15 @@ def run_benchmarks(embedding, gpu=True, profile_path=None, cache_adapters=True, 
             profile_path = os.path.join(out_dir, f"bench_{embedding}_{device_label}.prof")
         profiler = cProfile.Profile()
 
+    fp16_label = {True: "on", False: "off", None: "auto"}.get(fp16, str(fp16))
+    cpu_lemma_label = {True: "on", False: "off", None: "auto"}.get(cpu_lemma, str(cpu_lemma))
+
     print(f"\n{'=' * 70}")
     print(f"Trankit Inference Benchmark")
-    print(f"Embedding: {embedding}")
+    print(f"Embedding: {embedding}  |  GPU: {gpu}")
     print(f"Warmup runs: {WARMUP_RUNS}  |  Benchmark runs: {BENCHMARK_RUNS}")
     print(f"cache_adapters: {cache_adapters}  stacked_adapters: {stacked_adapters}")
+    print(f"fp16: {fp16_label}  cpu_lemma: {cpu_lemma_label}")
     if profile_path:
         print(f"Profiling: ON (warmup/init excluded)")
     print(f"{'=' * 70}\n")
@@ -326,7 +330,7 @@ def run_throughput_benchmark(embedding, gpu=True, cache_adapters=True,
                              task="full", langs=None,
                              warmup=5, profile_path=None,
                              batch_size=None, fp16=None, cpu_lemma=None,
-                             stacked_adapters=False):
+                             stacked_adapters=False, batch_tokenize=None):
     profiler = None
     if profile_path is not None:
         if profile_path == "":
@@ -339,9 +343,15 @@ def run_throughput_benchmark(embedding, gpu=True, cache_adapters=True,
     lang_list = langs if langs else ["english"]
     first_lang = lang_list[0]
 
+    fp16_label = {True: "on", False: "off", None: "auto"}.get(fp16, str(fp16))
+    cpu_lemma_label = {True: "on", False: "off", None: "auto"}.get(cpu_lemma, str(cpu_lemma))
+    bt_label = {True: "on", False: "off", None: "default"}.get(batch_tokenize, str(batch_tokenize))
+
     print(f"\n{'=' * 70}")
     print(f"Trankit Throughput Benchmark")
-    print(f"Embedding: {embedding} | cache_adapters: {cache_adapters} | stacked_adapters: {stacked_adapters}")
+    print(f"Embedding: {embedding}  |  GPU: {gpu}")
+    print(f"cache_adapters: {cache_adapters}  stacked_adapters: {stacked_adapters}")
+    print(f"fp16: {fp16_label}  cpu_lemma: {cpu_lemma_label}  batch_tokenize: {bt_label}")
     print(f"Task: {task} pipeline | Documents: {num_docs} | ~{target_words} words/doc")
     if batch_size:
         print(f"Batch size: {batch_size} (stage-level batching)")
@@ -373,10 +383,11 @@ def run_throughput_benchmark(embedding, gpu=True, cache_adapters=True,
     multi_lang = len(lang_list) > 1
 
     # 5. Map task string to callable
-    use_batch = batch_size is not None and task == "full" and not multi_lang
+    batchable_tasks = {"full", "tokenize"}
+    use_batch = batch_size is not None and task in batchable_tasks and not multi_lang
     if batch_size and not use_batch:
-        if task != "full":
-            print(f"WARNING: --batch only works with --task=full, ignoring batch_size={batch_size}")
+        if task not in batchable_tasks:
+            print(f"WARNING: --batch only works with --task={{{','.join(sorted(batchable_tasks))}}}, ignoring batch_size={batch_size}")
         if multi_lang:
             print(f"WARNING: --batch only works with single language, ignoring batch_size={batch_size}")
 
@@ -397,6 +408,13 @@ def run_throughput_benchmark(embedding, gpu=True, cache_adapters=True,
             p.set_active(lang)
         return base_fn(text)
 
+    # Batch dispatch: full pipeline vs tokenize-only
+    def run_batch(chunk):
+        if task == "tokenize":
+            return p.tokenize_batch(chunk)
+        else:
+            return p.batch(chunk, batch_tokenize=batch_tokenize)
+
     # 6. Warmup
     print(f"\nWarming up ({warmup} docs/lang)...")
     num_tokens = 0
@@ -405,7 +423,7 @@ def run_throughput_benchmark(embedding, gpu=True, cache_adapters=True,
         for lang in lang_list:
             for _ in range(warmup):
                 if use_batch:
-                    results = p.batch([doc_text])
+                    results = run_batch([doc_text])
                     result = results[0]
                 else:
                     result = run_doc(doc_text, lang)
@@ -429,7 +447,7 @@ def run_throughput_benchmark(embedding, gpu=True, cache_adapters=True,
             for i in range(0, len(all_docs), batch_size):
                 chunk = all_docs[i:i + batch_size]
                 start = time.perf_counter()
-                p.batch(chunk)
+                run_batch(chunk)
                 elapsed = time.perf_counter() - start
                 per_doc = elapsed / len(chunk)
                 for _ in chunk:
@@ -569,6 +587,12 @@ if __name__ == "__main__":
         warmup = int(_get_flag_value(flags, "warmup", "5"))
         batch_str = _get_flag_value(flags, "batch", None)
         batch_size = int(batch_str) if batch_str else None
+        if "--no-batch-tokenize" in flags:
+            batch_tokenize = False
+        elif "--batch-tokenize" in flags:
+            batch_tokenize = True
+        else:
+            batch_tokenize = None  # default (env var / on)
         run_throughput_benchmark(
             embedding, gpu=gpu, cache_adapters=cache_adapters,
             num_docs=num_docs, target_words=target_words,
@@ -576,6 +600,7 @@ if __name__ == "__main__":
             profile_path=profile_path, batch_size=batch_size,
             fp16=fp16, cpu_lemma=cpu_lemma,
             stacked_adapters=stacked_adapters,
+            batch_tokenize=batch_tokenize,
         )
     else:
         run_benchmarks(embedding, gpu=gpu, profile_path=profile_path, cache_adapters=cache_adapters, fp16=fp16, cpu_lemma=cpu_lemma, stacked_adapters=stacked_adapters)

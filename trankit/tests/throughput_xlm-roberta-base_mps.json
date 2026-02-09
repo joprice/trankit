@@ -1,8 +1,32 @@
 {
+  "metadata": {
+    "timestamp_utc": "2026-02-09T17:49:01Z",
+    "git_sha": "f0923ae159994e338c4e23498844cf1c68c89578",
+    "mode": "throughput",
+    "embedding": "xlm-roberta-base",
+    "gpu_requested": true,
+    "cache_adapters": true,
+    "stacked_adapters": true,
+    "python_version": "3.12.11",
+    "platform": "macOS-26.2-arm64-arm-64bit",
+    "torch_version": "2.10.0",
+    "cuda_available": false,
+    "cuda_version": null,
+    "mps_available": true,
+    "profile_path": null,
+    "task": "tokenize",
+    "num_docs": 100,
+    "target_words": 300,
+    "warmup_per_lang": 5,
+    "langs": [
+      "english"
+    ],
+    "batch_size": 20
+  },
   "embedding": "xlm-roberta-base",
   "device": "mps",
   "cache_adapters": true,
-  "task": "full",
+  "task": "tokenize",
   "num_docs": 100,
   "target_words": 300,
   "actual_words": 380,
@@ -12,19 +36,19 @@
     "english"
   ],
   "warmup_per_lang": 5,
-  "init_time_sec": 2.84,
+  "init_time_sec": 2.03,
   "aggregate": {
     "num_docs": 100,
-    "total_sec": 24.14,
-    "mean_ms": 241.4,
-    "median_ms": 235.1,
-    "p95_ms": 287.8,
-    "p99_ms": 287.8,
-    "min_ms": 228.3,
-    "max_ms": 287.8,
-    "stdev_ms": 17.2,
-    "docs_per_sec": 4.14,
-    "tokens_per_sec": 1772.9
+    "total_sec": 12.82,
+    "mean_ms": 128.2,
+    "median_ms": 127.0,
+    "p95_ms": 136.7,
+    "p99_ms": 136.7,
+    "min_ms": 123.1,
+    "max_ms": 136.7,
+    "stdev_ms": 5.0,
+    "docs_per_sec": 7.8,
+    "tokens_per_sec": 3339.2
   },
   "per_language": {}
 }

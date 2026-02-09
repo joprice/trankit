@@ -27,6 +27,16 @@ import hashlib
 
 import os
 
+def _has_hf_snapshot(cache_dir, model_name):
+    """Check if a HuggingFace model is already cached locally.
+
+    Returns True if the HF hub-style cache has a snapshot, meaning
+    we can skip the network HEAD request and use local_files_only=True.
+    """
+    snapshot_dir = os.path.join(cache_dir, f"models--{model_name.replace('/', '--')}", "snapshots")
+    return os.path.isdir(snapshot_dir) and bool(os.listdir(snapshot_dir))
+
+
 _BYPASS_ADAPTER_RESET = os.environ.get('TRANKIT_BYPASS_ADAPTER_RESET', '1') == '1'
 _STRIP_LORA = os.environ.get('TRANKIT_STRIP_LORA', '1') == '1'
 _PATCH_ADAPTER_OVERHEAD = os.environ.get('TRANKIT_PATCH_ADAPTER_OVERHEAD', '1') == '1'
@@ -40,6 +50,25 @@ def _inference_context(autocast_ctx):
     """Stack torch.inference_mode() with an autocast context."""
     with torch.inference_mode(), autocast_ctx:
         yield
+
+class _MergedTokenizeDataset(Dataset):
+    """Wraps instances from multiple TokenizeDatasetLive with (doc_id, local_idx) tracking."""
+    def __init__(self, instances, keys, orig_collate_fn):
+        self.data = instances
+        self.keys = keys  # parallel list of (doc_id, local_idx) tuples
+        self._orig_collate = orig_collate_fn
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        return (self.data[idx], self.keys[idx])
+
+    def collate_fn(self, batch):
+        instances = [item[0] for item in batch]
+        keys = [item[1] for item in batch]
+        return self._orig_collate(instances), keys
+
 
 TRANKIT_QUIET = os.environ.get("TRANKIT_QUIET", "").lower() in ("1", "true", "yes")
 
@@ -397,10 +426,14 @@ class Pipeline:
             previous_hf_transfer = os.environ.get("HF_HUB_ENABLE_HF_TRANSFER")
             os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
 
+        # Skip HF hub HEAD requests when model is already cached locally
+        local_only = _has_hf_snapshot(cache_dir, self.master_config.embedding_name)
+
         try:
             self.master_config.wordpiece_splitter = XLMRobertaTokenizerFast.from_pretrained(
                 self.master_config.embedding_name,
                 cache_dir=cache_dir,
+                local_files_only=local_only,
             )
         finally:
             if disable_hf_transfer:
@@ -1000,6 +1033,24 @@ class Pipeline:
 
                 wordpiece_ends.extend(wp_ends)
                 paragraph_indexes.extend(para_ids)
+        # reconstruction
+        doc = self._reconstruct_tokenized_doc(
+            in_doc, test_set.treebank_name,
+            wordpiece_pred_labels, wordpiece_ends, paragraph_indexes)
+
+        # multi-word expansion if required
+        if tbname2training_id[self._config.treebank_name] % 2 == 1:
+            doc = self._mwt_expand(doc)
+
+        return doc
+
+    def _reconstruct_tokenized_doc(self, in_doc, treebank_name,
+                                    wordpiece_pred_labels, wordpiece_ends,
+                                    paragraph_indexes):
+        """Reconstruct tokenized sentences from GPU predictions.
+
+        Returns list of sentence dicts (ID, TEXT, TOKENS, DSPAN).
+        """
         # mapping
         para_id_to_wp_pred_labels = defaultdict(list)
 
@@ -1008,9 +1059,7 @@ class Pipeline:
             para_id_to_wp_pred_labels[p_index].extend(zip(wp_pred_ls, wp_es))
 
         # get predictions
-        corpus_text = in_doc
-
-        paragraphs = [s for pt in NEWLINE_WHITESPACE_RE.split(corpus_text) if (s := pt.rstrip())]
+        paragraphs = [s for pt in NEWLINE_WHITESPACE_RE.split(in_doc) if (s := pt.rstrip())]
         all_wp_preds = []
         all_para_texts = []
         all_para_starts = []
@@ -1041,7 +1090,7 @@ class Pipeline:
                 local_position += 1
                 current_tok += t
                 if wp_p >= 1:
-                    tok = normalize_token(test_set.treebank_name, current_tok, ud_eval=self._ud_eval)
+                    tok = normalize_token(treebank_name, current_tok, ud_eval=self._ud_eval)
                     assert '\t' not in tok, tok
                     if len(tok) <= 0:
                         current_tok = ''
@@ -1062,7 +1111,7 @@ class Pipeline:
                         current_sent = []
 
             if len(current_tok):
-                tok = normalize_token(test_set.treebank_name, current_tok, ud_eval=self._ud_eval)
+                tok = normalize_token(treebank_name, current_tok, ud_eval=self._ud_eval)
                 assert '\t' not in tok, tok
                 if len(tok) > 0:
                     additional_info = {DSPAN: (para_start + local_position - len(tok),
@@ -1079,11 +1128,123 @@ class Pipeline:
                     DSPAN: (processed_sent[0][DSPAN][0], processed_sent[-1][DSPAN][1])
                 })
 
-        # multi-word expansion if required
-        if tbname2training_id[self._config.treebank_name] % 2 == 1:
-            doc = self._mwt_expand(doc)
-
         return doc
+
+    def _tokenize_docs(self, docs):
+        """Tokenize multiple documents with a merged GPU forward pass.
+
+        All docs must be in the pipeline's current active language.
+        auto_mode language detection is NOT supported for batch.
+        """
+        assert not self.auto_mode, (
+            "_tokenize_docs does not support auto_mode. "
+            "Set a fixed language with set_active() before calling."
+        )
+
+        config = self._config
+        treebank_name = config.treebank_name
+        eval_batch_size = tbname2tokbatchsize.get(
+            lang2treebank[self.active_lang], self._tokbatchsize)
+        if config.embedding_name == 'xlm-roberta-large':
+            eval_batch_size = int(eval_batch_size / 2)
+        max_input_length = tbname2max_input_length.get(
+            lang2treebank[self.active_lang], 400)
+
+        # Pre-filter: skip whitespace-only docs, track original indices
+        non_empty = []  # (original_index, doc_text)
+        results = [[] for _ in docs]
+
+        for i, doc_text in enumerate(docs):
+            if isinstance(doc_text, str) and doc_text.strip():
+                non_empty.append((i, doc_text))
+
+        if not non_empty:
+            return results
+
+        # Build per-doc datasets, assign (doc_id, local_idx) keys
+        all_instances = []
+        all_keys = []  # (doc_id, local_idx) for each instance
+        orig_collate_fn = None
+        expected_counts = []  # expected instance count per non-empty doc
+
+        for doc_id, (orig_idx, doc_text) in enumerate(non_empty):
+            test_set = TokenizeDatasetLive(config, doc_text,
+                                            max_input_length=max_input_length)
+            test_set.numberize(config.wordpiece_splitter)
+            if orig_collate_fn is None:
+                orig_collate_fn = test_set.collate_fn
+            n = len(test_set)
+            expected_counts.append(n)
+            for local_idx in range(n):
+                all_instances.append(test_set.data[local_idx])
+                all_keys.append((doc_id, local_idx))
+
+        if not all_instances:
+            return results
+
+        # Load adapter weights once
+        self._load_adapter_weights(model_name='tokenizer')
+
+        # Merged forward pass with (doc_id, local_idx) routing
+        merged = _MergedTokenizeDataset(all_instances, all_keys, orig_collate_fn)
+
+        # Collect predictions bucketed by doc_id
+        per_doc_preds = [[] for _ in non_empty]
+
+        with self._autocast():
+            for batch, batch_keys in DataLoader(
+                    merged, batch_size=eval_batch_size,
+                    shuffle=False, collate_fn=merged.collate_fn,
+                    pin_memory=self._pin_memory):
+                batch = batch_to_device(batch, config.device,
+                                        non_blocking=self._non_blocking)
+                wordpiece_reprs = self._embedding_layers.get_tokenizer_inputs(batch)
+                predictions = self._tokenizer[config.active_lang].predict(
+                    batch, wordpiece_reprs)
+                wp_pred_labels = predictions[0].detach().cpu().tolist()
+                wp_ends, para_ids = predictions[1], predictions[2]
+
+                for pred, ends, para_id, (did, lidx) in zip(
+                        wp_pred_labels, wp_ends, para_ids, batch_keys):
+                    per_doc_preds[did].append((lidx, pred[:len(ends)], ends, para_id))
+
+        # Reconstruct each non-empty doc from its predictions
+        has_mwt = tbname2training_id[treebank_name] % 2 == 1
+
+        for doc_id, ((orig_idx, doc_text), doc_preds, expected) in enumerate(
+                zip(non_empty, per_doc_preds, expected_counts)):
+            doc_preds.sort(key=lambda x: x[0])  # sort by local_idx
+            preds = [p for _, p, _, _ in doc_preds]
+            ends = [e for _, _, e, _ in doc_preds]
+            paras = [p for _, _, _, p in doc_preds]
+
+            doc = self._reconstruct_tokenized_doc(
+                doc_text, treebank_name, preds, ends, paras)
+            if has_mwt:
+                doc = self._mwt_expand(doc)
+            results[orig_idx] = doc
+
+        return results
+
+    def tokenize_batch(self, docs):
+        """Tokenize multiple documents with merged GPU forward pass.
+
+        All docs must be the same language (pipeline's active language).
+        auto_mode is not supported -- set language explicitly first.
+
+        Returns:
+            List of results matching tokenize(doc) behavior per item.
+        """
+        if not docs:
+            return []
+        all_doc_sents = self._tokenize_docs(docs)
+        results = []
+        for doc_text, sents in zip(docs, all_doc_sents):
+            if not isinstance(doc_text, str) or not doc_text.strip():
+                results.append([])
+            else:
+                results.append({TEXT: doc_text, SENTENCES: sents, LANG: self.active_lang})
+        return results
 
     def posdep(self, input, is_sent=False):
         if is_sent:
@@ -1459,14 +1620,20 @@ class Pipeline:
 
         return dner_doc
 
-    def batch(self, docs, skip_dict_seq2seq=None):
+    def batch(self, docs, skip_dict_seq2seq=None, batch_tokenize=None):
         """Process multiple documents with stage-level batching for higher throughput.
 
         All documents must be in the pipeline's current active language.
         Returns a list of result dicts, same format as calling pipeline(text).
+
+        Args:
+            batch_tokenize: If True, merge tokenizer GPU passes across docs.
+                If False, tokenize each doc independently. Defaults to
+                TRANKIT_BATCH_TOKENIZE env var (1=on, 0=off).
         """
         from .batch_pipeline import batch_process
-        return batch_process(self, docs, skip_dict_seq2seq=skip_dict_seq2seq)
+        return batch_process(self, docs, skip_dict_seq2seq=skip_dict_seq2seq,
+                             batch_tokenize=batch_tokenize)
 
     def __call__(self, input, is_sent=False, skip_dict_seq2seq=None):
         if is_sent:

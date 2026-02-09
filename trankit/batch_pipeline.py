@@ -17,6 +17,7 @@ All documents in a single batch_process call must be the same language
 (the pipeline's current active language).
 """
 
+import os
 import torch
 from copy import deepcopy
 from torch.utils.data import DataLoader
@@ -30,13 +31,19 @@ from .utils.chuliu_edmonds import chuliu_edmonds_one_root
 from .utils.tbinfo import tbname2training_id, tbname2tagbatchsize, langwithner
 
 
-def batch_process(pipeline, docs, skip_dict_seq2seq=None):
+_BATCH_TOKENIZE = os.environ.get('TRANKIT_BATCH_TOKENIZE', '1') == '1'
+
+
+def batch_process(pipeline, docs, skip_dict_seq2seq=None, batch_tokenize=None):
     """Process multiple documents through the full pipeline with stage-level batching.
 
     Args:
         pipeline: An initialized trankit.Pipeline instance.
         docs: List of document strings (all same language as pipeline.active_lang).
         skip_dict_seq2seq: Optional override for lemmatizer dict-skip optimization.
+        batch_tokenize: If True, merge tokenizer GPU passes across docs.
+            If False, tokenize each doc independently. Defaults to
+            TRANKIT_BATCH_TOKENIZE env var (1=on, 0=off), which defaults on.
 
     Returns:
         List of result dicts, one per input document, in the same format as
@@ -51,14 +58,22 @@ def batch_process(pipeline, docs, skip_dict_seq2seq=None):
     # Guard: all docs processed under the same language / adapter set
     assert active_lang is not None, "Pipeline has no active language set."
 
-    # ── Stage 1: Tokenize (per-doc, paragraph handling is doc-specific) ──
+    use_batch_tok = batch_tokenize if batch_tokenize is not None else _BATCH_TOKENIZE
+
+    # ── Stage 1: Tokenize ──
     all_tokenized = []  # flat list of sentence dicts across all docs
     doc_sent_counts = []  # number of sentences per doc, for demux
 
-    for doc_text in docs:
-        sents = pipeline._tokenize_doc(in_doc=doc_text)
-        doc_sent_counts.append(len(sents))
-        all_tokenized.extend(sents)
+    if use_batch_tok:
+        all_doc_sents = pipeline._tokenize_docs(docs)
+        for sents in all_doc_sents:
+            doc_sent_counts.append(len(sents))
+            all_tokenized.extend(sents)
+    else:
+        for doc_text in docs:
+            sents = pipeline._tokenize_doc(in_doc=doc_text)
+            doc_sent_counts.append(len(sents))
+            all_tokenized.extend(sents)
 
     if not all_tokenized:
         return [{TEXT: doc_text, SENTENCES: [], LANG: active_lang} for doc_text in docs]

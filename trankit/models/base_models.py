@@ -11,10 +11,13 @@ class Base_Model(nn.Module):  # currently assuming the pretrained transformer is
         self.task_name = task_name
         # xlmr encoder
         self.xlmr_dim = 768 if config.embedding_name == 'xlm-roberta-base' else 1024
+        model_cache_dir = os.path.join(config._cache_dir, config.embedding_name)
+        from ..pipeline import _has_hf_snapshot
         self.xlmr = XLMRobertaModel.from_pretrained(config.embedding_name,
-                                                    cache_dir=os.path.join(config._cache_dir, config.embedding_name),
+                                                    cache_dir=model_cache_dir,
                                                     output_hidden_states=True,
-                                                    use_safetensors=True)
+                                                    use_safetensors=True,
+                                                    local_files_only=_has_hf_snapshot(model_cache_dir, config.embedding_name))
         adapters.init(self.xlmr)
         self.xlmr_dropout = nn.Dropout(p=config.embedding_dropout)
         # add task adapters
