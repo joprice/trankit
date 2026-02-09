@@ -165,10 +165,10 @@ def wordpiece_tokenize_from_raw_text(wordpiece_splitter, sent_text, sent_labels,
                 flat_wordpieces.append((p, pid))
             end_pids.add(len(flat_wordpieces) - 1)
 
-    single_original_string = ''.join([c.strip() for c in sent_text])
-
-    original_characters = [c for c in single_original_string]
-    character_locations = get_character_locations(original_characters, sent_text)
+    # Map each non-whitespace character position in sent_text to its index.
+    # Equivalent to get_character_locations([c for c in stripped], sent_text)
+    # when all string_units are single characters, but O(n) single-pass.
+    character_locations = [k for k, c in enumerate(sent_text) if c.strip()]
 
     fast_result = None
     if fast_path and os.environ.get('TRANKIT_TOKENIZER_FASTPATH') != '0':
@@ -182,6 +182,7 @@ def wordpiece_tokenize_from_raw_text(wordpiece_splitter, sent_text, sent_labels,
         flat_wordpiece_labels, flat_wordpiece_ends = fast_result
     else:
         # Slow path: character-level mapping
+        single_original_string = ''.join([c.strip() for c in sent_text])
         single_wordpiece_string = ''.join(
             [p if not p.startswith('▁') else p.lstrip('▁') for p, pid in flat_wordpieces])
         wp_character_2_or_character = get_mapping_wp_character_to_or_character(
