@@ -24,6 +24,7 @@ import hashlib
 import os
 
 _BYPASS_ADAPTER_RESET = os.environ.get('TRANKIT_BYPASS_ADAPTER_RESET', '1') == '1'
+_STRIP_LORA = os.environ.get('TRANKIT_STRIP_LORA', '1') == '1'
 
 from transformers import XLMRobertaTokenizerFast
 
@@ -62,6 +63,20 @@ def _active_adapter_names(xlmr):
     if isinstance(active, (list, tuple)):
         return set(str(n) for n in active)
     return set()
+
+
+def _strip_lora_wrappers(model):
+    """Replace empty LoRA wrapper forward methods with plain nn.Linear.forward.
+
+    adapters.init() wraps every linear layer with LoRALinearTorch, adding
+    per-forward overhead (get_active_setup, merged check) even when no LoRA
+    adapters are loaded. Since trankit uses only Pfeiffer bottleneck adapters,
+    these wrappers are pure waste. This replaces their forward at the class
+    level so all instances benefit.
+    """
+    from adapters.methods.lora import LoRALinearTorch
+    import torch.nn as nn
+    LoRALinearTorch.forward = nn.Linear.forward
 
 
 def is_string(input):
@@ -148,6 +163,8 @@ class Pipeline:
         if self._use_half:
             self._embedding_layers.half()
         self._embedding_layers.eval()
+        if _STRIP_LORA:
+            _strip_lora_wrappers(self._embedding_layers.xlmr)
         # for loading & auto-converting adapter weights
         self._adapter_loader = AdapterLoader(self._embedding_layers.xlmr, "text_task")
 

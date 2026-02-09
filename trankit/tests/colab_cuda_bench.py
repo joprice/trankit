@@ -12,9 +12,11 @@ WARMUP_RUNS = 2
 BENCHMARK_RUNS = 10
 PROFILE = True       # Set to True to collect cProfile stats
 BYPASS_ADAPTER_RESET = True  # Set to False to benchmark without the bypass
+STRIP_LORA = True            # Set to False to keep LoRA wrappers (no-op overhead)
 
 import os
 os.environ['TRANKIT_BYPASS_ADAPTER_RESET'] = '1' if BYPASS_ADAPTER_RESET else '0'
+os.environ['TRANKIT_STRIP_LORA'] = '1' if STRIP_LORA else '0'
 
 # ── 1. Check CUDA ────────────────────────────────────────────
 import torch
