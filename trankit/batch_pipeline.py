@@ -111,7 +111,7 @@ def batch_process(pipeline, docs, skip_dict_seq2seq=None, batch_tokenize=None):
     else:
         eval_batch_size = tbname2tagbatchsize.get(config.treebank_name, pipeline._tagbatchsize)
         if config.embedding_name == 'xlm-roberta-large':
-            eval_batch_size = int(eval_batch_size / 3)
+            eval_batch_size = max(eval_batch_size // 3, 16)
 
     itos = config.itos[active_lang]
 
