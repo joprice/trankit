@@ -6,6 +6,7 @@ from ..utils.posdep_utils import *
 from ..utils.tokenizer_utils import *
 from ..utils.ner_utils import *
 
+import os
 
 def encode_pieces(tokenizer, pieces, max_length):
     """Encode pre-tokenized wordpieces to IDs with special tokens.
@@ -17,6 +18,58 @@ def encode_pieces(tokenizer, pieces, max_length):
     if len(ids) > max_length:
         ids = ids[:max_length - 1] + [ids[-1]]  # keep EOS
     return ids
+
+
+_BATCH_ENCODE_CHUNK_DEFAULT = 200000
+try:
+    _BATCH_ENCODE_CHUNK = int(os.environ.get('TRANKIT_BATCH_ENCODE_CHUNK', _BATCH_ENCODE_CHUNK_DEFAULT))
+    if _BATCH_ENCODE_CHUNK <= 0:
+        _BATCH_ENCODE_CHUNK = _BATCH_ENCODE_CHUNK_DEFAULT
+except (ValueError, TypeError):
+    _BATCH_ENCODE_CHUNK = _BATCH_ENCODE_CHUNK_DEFAULT
+
+
+def batch_encode_pieces(tokenizer, pieces_list, max_length):
+    """Batch-encode multiple wordpiece lists to IDs with BOS/EOS + truncation.
+
+    Single convert_tokens_to_ids call for all instances (chunked if very large
+    to avoid RAM spikes).
+    """
+    if not pieces_list:
+        return []
+    if max_length < 2:
+        raise ValueError(f"max_length must be >= 2 (BOS+EOS), got {max_length}")
+    bos = tokenizer.bos_token_id
+    eos = tokenizer.eos_token_id
+    if bos is None or eos is None:
+        raise ValueError(
+            f"Tokenizer missing special tokens: bos={bos}, eos={eos}"
+        )
+    lengths = [len(p) for p in pieces_list]
+    flat = [tok for pieces in pieces_list for tok in pieces]
+    # Chunked conversion to avoid RAM spikes on huge batches
+    total = len(flat)
+    if total == 0:
+        flat_ids = []
+    elif total <= _BATCH_ENCODE_CHUNK:
+        flat_ids = tokenizer.convert_tokens_to_ids(flat)
+    else:
+        flat_ids = []
+        for i in range(0, total, _BATCH_ENCODE_CHUNK):
+            flat_ids.extend(tokenizer.convert_tokens_to_ids(flat[i:i + _BATCH_ENCODE_CHUNK]))
+    results = []
+    offset = 0
+    for n in lengths:
+        ids = [bos] + flat_ids[offset:offset + n] + [eos]
+        if len(ids) > max_length:
+            ids = ids[:max_length - 1] + [eos]
+        results.append(ids)
+        offset += n
+    if offset != len(flat_ids):
+        raise RuntimeError(
+            f"batch_encode_pieces split bug: offset={offset}, total={len(flat_ids)}"
+        )
+    return results
 
 
 def batched_tokenize_words(tokenizer, words):

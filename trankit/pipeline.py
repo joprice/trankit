@@ -6,7 +6,8 @@ from .models.lemma_model import LemmaWrapper
 from .iterators.tokenizer_iterators import TokenizeDatasetLive
 from .iterators.tagger_iterators import TaggerDatasetLive
 from .iterators.ner_iterators import NERDatasetLive
-from .iterators import batch_to_device
+from .iterators import batch_to_device, batch_encode_pieces
+from .iterators.tokenizer_iterators import Instance as _TokenizerInstance
 from .utils.tokenizer_utils import *
 from collections import defaultdict
 from .utils.conll import *
@@ -1177,40 +1178,67 @@ class Pipeline:
         if not non_empty:
             return results
 
-        # Build per-doc datasets in parallel (HF tokenizer releases GIL),
-        # then assign (doc_id, local_idx) keys on the main thread.
+        # Phase 1: Thread pool does load_data() only (no numberize).
+        # HF tokenizer releases GIL for the batched tokenization in load_data.
         wordpiece_splitter = config.wordpiece_splitter
 
-        def _prepare_doc(doc_text):
-            ts = TokenizeDatasetLive(config, doc_text,
-                                     max_input_length=max_input_length)
-            ts.numberize(wordpiece_splitter)
-            return ts
+        def _load_doc(doc_text):
+            return TokenizeDatasetLive(config, doc_text,
+                                       max_input_length=max_input_length)
 
         doc_texts = [doc_text for _, doc_text in non_empty]
         num_workers = min(_TOK_PREP_WORKERS, len(doc_texts))
         if num_workers > 1:
             with ThreadPoolExecutor(max_workers=num_workers) as pool:
-                test_sets = list(pool.map(_prepare_doc, doc_texts))
+                test_sets = list(pool.map(_load_doc, doc_texts))
         else:
-            test_sets = [_prepare_doc(t) for t in doc_texts]
+            test_sets = [_load_doc(t) for t in doc_texts]
 
-        all_instances = []
-        all_keys = []  # (doc_id, local_idx) for each instance
+        # Phase 2: Collect raw instances across all docs
+        all_raw = []       # raw dict instances (pre-numberize)
+        all_keys = []      # (doc_id, local_idx)
         orig_collate_fn = None
-        expected_counts = []  # expected instance count per non-empty doc
+        expected_counts = []
 
         for doc_id, test_set in enumerate(test_sets):
+            assert test_set.treebank_name == treebank_name
             if orig_collate_fn is None:
                 orig_collate_fn = test_set.collate_fn
             n = len(test_set)
             expected_counts.append(n)
             for local_idx in range(n):
-                all_instances.append(test_set.data[local_idx])
+                all_raw.append(test_set.data[local_idx])
                 all_keys.append((doc_id, local_idx))
 
-        if not all_instances:
+        if not all_raw:
             return results
+
+        # Phase 3: One global batch_encode_pieces across ALL instances
+        all_pieces = [inst['wordpieces'] for inst in all_raw]
+        all_piece_idxs = batch_encode_pieces(wordpiece_splitter, all_pieces, max_input_length)
+        assert len(all_raw) == len(all_keys) == len(all_piece_idxs)
+
+        # Phase 4: Build Instance namedtuples (padding + labels)
+        all_instances = []
+        for inst, piece_idxs in zip(all_raw, all_piece_idxs):
+            pad_num = max_input_length - len(piece_idxs)
+            attn_masks = [1] * len(piece_idxs) + [0] * pad_num
+            piece_idxs = piece_idxs + [0] * pad_num
+            wordpieces = inst['wordpieces']
+            token_type_idxs = [
+                -100 if pid >= len(wordpieces) else inst['wordpiece_labels'][pid]
+                for pid in range(len(piece_idxs) - 2)
+            ]
+            all_instances.append(_TokenizerInstance(
+                paragraph_index=inst['paragraph_index'],
+                wordpieces=wordpieces,
+                wordpiece_labels=inst['wordpiece_labels'],
+                wordpiece_ends=inst['wordpiece_ends'],
+                piece_idxs=piece_idxs,
+                attention_masks=attn_masks,
+                token_type_idxs=token_type_idxs,
+                wordpiece_num=len(wordpieces)
+            ))
 
         # Load adapter weights once
         self._load_adapter_weights(model_name='tokenizer')

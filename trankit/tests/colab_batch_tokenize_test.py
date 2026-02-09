@@ -37,6 +37,20 @@ print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f}GB
 !pip install --no-cache-dir -q --no-deps --force-reinstall git+https://github.com/joprice/trankit.git@adapter-caching
 !pip install --no-cache-dir -q adapters psutil langid filelock tqdm requests protobuf sentencepiece sacremoses regex packaging
 
+# ── 2b. Print installed commit hash ──────────────────────────
+import importlib.metadata, pathlib, json as _json
+try:
+    _dist = importlib.metadata.distribution("trankit")
+    _du = pathlib.Path(str(_dist._path)) / "direct_url.json"
+    if _du.exists():
+        _info = _json.loads(_du.read_text()).get("vcs_info", {})
+        print(f"trankit commit: {_info.get('commit_id', '?')[:10]}")
+        print(f"trankit branch: {_info.get('requested_revision', '?')}")
+    else:
+        print(f"trankit version: {_dist.version}")
+except Exception as e:
+    print(f"trankit version: unknown ({e})")
+
 # ── 3. Setup ─────────────────────────────────────────────────
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
