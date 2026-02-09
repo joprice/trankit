@@ -84,6 +84,7 @@ class _MergedTokenizeDataset(Dataset):
 
 
 TRANKIT_QUIET = os.environ.get("TRANKIT_QUIET", "").lower() in ("1", "true", "yes")
+_TRANKIT_COMPILE = os.environ.get("TRANKIT_COMPILE", "0") == "1"
 
 _ADAPTER_NAME_RE = re.compile(r'[^A-Za-z0-9_]+')
 
@@ -272,9 +273,9 @@ class Pipeline:
             self._cpu_lemma = (self._config.device.type == 'mps')
         else:
             self._cpu_lemma = cpu_lemma
-        # FP16 autocast: off by default (weights already fp16 via .half() on CUDA)
+        # FP16 autocast: off by default unless TRANKIT_FP16=1
         if fp16 is None:
-            self._fp16 = False
+            self._fp16 = os.environ.get('TRANKIT_FP16', '0') == '1'
         else:
             self._fp16 = fp16
         device_type = self._config.device.type
@@ -322,6 +323,7 @@ class Pipeline:
         self._stacked_adapters = stacked_adapters
         self._stacked_registry = None  # deferred until first adapter extraction
         self._stacked_installed = False
+        self._compiled = False
 
         self._cache_adapters = cache_adapters
         if cache_adapters:
@@ -652,6 +654,16 @@ class Pipeline:
 
             # Set active
             self._stacked_registry.set_active(slot_name)
+
+            # Auto-compile: after all base adapters are registered
+            if _TRANKIT_COMPILE and not self._compiled:
+                slots = self._stacked_registry.slot_to_idx
+                needed = [_adapter_slot_name(t, current_lang)
+                          for t in ('tokenizer', 'tagger', 'ner')]
+                if all(n in slots for n in needed):
+                    self.compile_model()
+                    self._compiled = True
+
             return
 
         if self._cache_adapters:
@@ -1365,7 +1377,7 @@ class Pipeline:
         # make predictions
         eval_batch_size = tbname2tagbatchsize.get(self._config.treebank_name, self._tagbatchsize)
         if self._config.embedding_name == 'xlm-roberta-large':
-            eval_batch_size = int(eval_batch_size / 3)
+            eval_batch_size = max(eval_batch_size // 3, 16)
 
         itos = self._config.itos[self._config.active_lang]
         with self._autocast():
@@ -1437,7 +1449,7 @@ class Pipeline:
         # make predictions
         eval_batch_size = tbname2tagbatchsize.get(self._config.treebank_name, self._tagbatchsize)
         if self._config.embedding_name == 'xlm-roberta-large':
-            eval_batch_size = int(eval_batch_size / 3)
+            eval_batch_size = max(eval_batch_size // 3, 16)
 
         itos = self._config.itos[self._config.active_lang]
         with self._autocast():
@@ -1621,7 +1633,7 @@ class Pipeline:
         self._load_adapter_weights(model_name='ner')
         eval_batch_size = tbname2tagbatchsize.get(self._config.treebank_name, self._tagbatchsize)
         if self._config.embedding_name == 'xlm-roberta-large':
-            eval_batch_size = int(eval_batch_size / 3)
+            eval_batch_size = max(eval_batch_size // 3, 16)
 
         with self._autocast():
             for batch in DataLoader(test_set,
@@ -1658,7 +1670,7 @@ class Pipeline:
         self._load_adapter_weights(model_name='ner')
         eval_batch_size = tbname2tagbatchsize.get(self._config.treebank_name, self._tagbatchsize)
         if self._config.embedding_name == 'xlm-roberta-large':
-            eval_batch_size = int(eval_batch_size / 3)
+            eval_batch_size = max(eval_batch_size // 3, 16)
 
         with self._autocast():
             for batch in DataLoader(test_set,
@@ -1734,7 +1746,7 @@ class Pipeline:
 
                 eval_batch_size = tbname2tagbatchsize.get(self._config.treebank_name, self._tagbatchsize)
                 if self._config.embedding_name == 'xlm-roberta-large':
-                    eval_batch_size = int(eval_batch_size / 3)
+                    eval_batch_size = max(eval_batch_size // 3, 16)
 
                 itos = self._config.itos[self._config.active_lang]
                 with self._autocast():
@@ -1845,7 +1857,7 @@ class Pipeline:
 
                 eval_batch_size = tbname2tagbatchsize.get(self._config.treebank_name, self._tagbatchsize)
                 if self._config.embedding_name == 'xlm-roberta-large':
-                    eval_batch_size = int(eval_batch_size / 3)
+                    eval_batch_size = max(eval_batch_size // 3, 16)
 
                 itos = self._config.itos[self._config.active_lang]
                 with self._autocast():

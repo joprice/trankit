@@ -439,6 +439,87 @@ _bp._EVAL_BATCH_SIZE_OVERRIDE = None
 
 print(f"\n{'=' * 70}")
 
+# ── 6d. FP16 + compile comparison ────────────────────────────
+print("\nFP16 + COMPILE: long/full merged")
+print("=" * 70)
+
+opt_doc = make_document(300)
+opt_docs = [opt_doc] * NUM_DOCS
+
+# Configs to test: (label, fp16, compile)
+OPT_CONFIGS = [
+    ("baseline",       False, False),
+    ("fp16",           True,  False),
+    ("compile",        False, True),
+    ("fp16+compile",   True,  True),
+]
+
+opt_header = (f"{'Config':<16s} {'docs/s':>7s} {'mean':>8s} {'p95':>8s} "
+              f"{'GPU%':>6s} {'VRAM':>7s}")
+print(opt_header)
+print("-" * len(opt_header))
+
+opt_results = []
+
+for label, use_fp16, use_compile in OPT_CONFIGS:
+    # Create fresh pipeline with the flags
+    torch.cuda.empty_cache()
+    p_opt = Pipeline("english", gpu=True, cache_dir="./cache", embedding=EMBEDDING,
+                     cache_adapters=CACHE_ADAPTERS, stacked_adapters=STACKED_ADAPTERS,
+                     fp16=use_fp16)
+
+    # Warmup (also triggers adapter loading + optional compile)
+    if use_compile:
+        # Run one inference to load all adapters, then compile
+        with torch.inference_mode():
+            batch_process(p_opt, opt_docs[:2], batch_tokenize=True)
+        p_opt.compile_model()
+
+    with torch.inference_mode():
+        for _ in range(3):
+            batch_process(p_opt, opt_docs[:5], batch_tokenize=True)
+        torch.cuda.synchronize()
+
+    monitor = GpuMonitor()
+    times = []
+
+    with torch.inference_mode():
+        monitor.start()
+        for i in range(0, NUM_DOCS, BATCH_SIZE):
+            chunk = opt_docs[i:i + BATCH_SIZE]
+            torch.cuda.synchronize()
+            t0 = time.perf_counter()
+            batch_process(p_opt, chunk, batch_tokenize=True)
+            torch.cuda.synchronize()
+            elapsed = time.perf_counter() - t0
+            per_doc = elapsed / len(chunk)
+            times.extend([per_doc] * len(chunk))
+        monitor.stop()
+
+    total = sum(times)
+    sorted_t = sorted(times)
+    gs = monitor.summary()
+
+    r = {
+        "config": label,
+        "fp16": use_fp16,
+        "compile": use_compile,
+        "docs_per_sec": round(NUM_DOCS / total, 2),
+        "mean_ms": round(statistics.mean(times) * 1000, 1),
+        "p95_ms": round(percentile(sorted_t, 95) * 1000, 1),
+        "gpu_mean_pct": gs.get("gpu_mean_pct", 0),
+        "mem_max_mb": gs.get("mem_max_mb", 0),
+    }
+    opt_results.append(r)
+
+    print(f"{label:<16s} {r['docs_per_sec']:>7.1f} {r['mean_ms']:>7.0f}ms "
+          f"{r['p95_ms']:>7.0f}ms {r['gpu_mean_pct']:>5.0f}% {r['mem_max_mb']:>6d}MB")
+
+    del p_opt
+
+# Restore original pipeline reference for JSON save
+print(f"\n{'=' * 70}")
+
 # ── 7. Save ──────────────────────────────────────────────────
 gpu_name = torch.cuda.get_device_name(0).replace(" ", "-")
 json_path = f"batch_tokenize_benchmark_{EMBEDDING.replace('/', '-')}_{gpu_name}.json"
@@ -453,6 +534,7 @@ with open(json_path, "w") as f:
         "warmup": WARMUP,
         "results": all_results,
         "batch_size_sweep": sweep_results,
+        "optimization_comparison": opt_results,
     }, f, indent=2)
 
 sys.stdout = _orig_stdout
