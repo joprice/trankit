@@ -656,15 +656,6 @@ class Pipeline:
             # Set active
             self._stacked_registry.set_active(slot_name)
 
-            # Auto-compile: after all base adapters are registered
-            if _TRANKIT_COMPILE and not self._compiled:
-                slots = self._stacked_registry.slot_to_idx
-                needed = [_adapter_slot_name(t, current_lang)
-                          for t in ('tokenizer', 'tagger', 'ner')]
-                if all(n in slots for n in needed):
-                    self.compile_model()
-                    self._compiled = True
-
             return
 
         if self._cache_adapters:
@@ -1732,6 +1723,12 @@ class Pipeline:
                              batch_tokenize=batch_tokenize)
 
     def __call__(self, input, is_sent=False, skip_dict_seq2seq=None):
+        # Deferred compile: freeze + compile on first inference so all languages
+        # added during startup are registered before the registry is frozen.
+        if _TRANKIT_COMPILE and self._stacked_adapters and not self._compiled:
+            self.compile_model()
+            self._compiled = True
+
         if is_sent:
             assert is_string(input) or is_list_strings(
                 input), 'Input must be one of the following:\n(i) A non-empty string.\n(ii) A list of non-empty strings.'
