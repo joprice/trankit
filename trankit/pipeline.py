@@ -1722,10 +1722,36 @@ class Pipeline:
         return batch_process(self, docs, skip_dict_seq2seq=skip_dict_seq2seq,
                              batch_tokenize=batch_tokenize)
 
+    def _preload_all_stacked_adapters(self):
+        """Eagerly load all languages' adapter weights into the stacked registry.
+
+        Normally adapter weights are loaded lazily on first use. This forces
+        them all to register so the registry can be frozen for torch.compile.
+        """
+        original_lang = self._config.active_lang
+        for lang in list(self.added_langs):
+            self._config.active_lang = lang
+            for adapter_type in ('tokenizer', 'tagger', 'ner'):
+                # Skip NER for languages that don't have it
+                if adapter_type == 'ner' and lang not in langwithner:
+                    continue
+                self._load_adapter_weights(model_name=adapter_type)
+        # Restore original active language
+        self._config.active_lang = original_lang
+        if self._stacked_registry is not None:
+            # Restore active adapter weights for original language
+            for adapter_type in ('tokenizer', 'tagger', 'ner'):
+                if adapter_type == 'ner' and original_lang not in langwithner:
+                    continue
+                slot = _adapter_slot_name(adapter_type, original_lang)
+                self._stacked_registry.set_active(slot)
+
     def __call__(self, input, is_sent=False, skip_dict_seq2seq=None):
-        # Deferred compile: freeze + compile on first inference so all languages
-        # added during startup are registered before the registry is frozen.
+        # Deferred compile: eagerly load all languages' adapter weights then
+        # freeze + compile. Deferred to first inference so all pipeline.add()
+        # calls complete before the registry is frozen.
         if _TRANKIT_COMPILE and self._stacked_adapters and not self._compiled:
+            self._preload_all_stacked_adapters()
             self.compile_model()
             self._compiled = True
 
